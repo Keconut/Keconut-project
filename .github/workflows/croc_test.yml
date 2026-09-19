@@ -330,22 +330,43 @@ jobs:
           } 2>&1 | tee "$D/frontend_02f_sram_locate.txt"
 
           # 找到就顺手打补丁：把那句 Verilator 不支持的延迟数组赋值改成非延迟赋值。
-          # 找不到也不失败，留给 Step 5 的 verilator 兜底处理。
-          mapfile -t SRAM_FILES < <(find croc -name 'ts_sram.sv' -type f 2>/dev/null || true)
+          # 关键：不能只靠 'find croc'，上次它返回空。这里加一条最可靠的路子——
+          # 从 Verilator 实际读取的文件清单 croc_rtl.f 里反查 ts_sram 的真实路径。
+          mapfile -t SRAM_FILES < <(find / -name 'ts_sram.sv' -type f 2>/dev/null | head -n 20 || true)
           if [ "${#SRAM_FILES[@]}" -eq 0 ]; then
-            echo "[WARN] 仓库里没有 ts_sram.sv，跳过补丁"
+            echo "[WARN] 全盘都没找到 ts_sram.sv，改用 croc_rtl.f 反查"
+            {
+              echo "########## croc_rtl.f 里提到 ts_sram 的行 ##########"
+              grep -n 'ts_sram' croc/verilator/croc_rtl.f || echo "(croc_rtl.f 里没有 ts_sram)"
+              echo "########## croc_rtl.f 是否是绝对路径 ##########"
+              head -n 3 croc/verilator/croc_rtl.f || true
+              echo "########## croc/rtl 下一层目录 ##########"
+              ls -1 croc/rtl 2>&1 | head -n 40 || true
+              echo "########## 列出所有 *sram* ############"
+              find / -name '*sram*' -type f 2>/dev/null | head -n 30 || true
+            } 2>&1 | tee "$D/frontend_02f_sram_fallback.txt"
           else
-            for f in "${SRAM_FILES[@]}"; do
-              if grep -q 'sram\[d\]\[i\].*<=' "$f"; then
-                echo "[INFO] 给 $f 打补丁（把延迟数组赋值 <= 改成 =）"
-                cp -f "$f" "$f.orig"
-                perl -i -pe 's/<=/=/g if /sram\[d\]\[i\]/' "$f"
-                diff -u "$f.orig" "$f" | tee -a "$D/frontend_02h_sram_patch.diff" || true
-              else
-                echo "[INFO] $f 里没有 sram[d][i] <= 这种写法，无需补丁"
-              fi
-            done
+            echo "[INFO] 找到 ${#SRAM_FILES[@]} 个 ts_sram.sv:"
+            printf '  %s\n' "${SRAM_FILES[@]}"
           fi
+
+          for f in "${SRAM_FILES[@]}"; do
+            [ -n "$f" ] || continue
+            if grep -q 'sram\[d\]\[i\].*<=' "$f"; then
+              echo "[INFO] 给 $f 打补丁（把延迟数组赋值 <= 改成 =）"
+              cp -f "$f" "$f.orig"
+              perl -i -pe 's/<=/=/g if /sram\[d\]\[i\]/' "$f"
+              diff -u "$f.orig" "$f" | tee -a "$D/frontend_02h_sram_patch.diff" || true
+              # 必须确认补丁真的生效，否则坏二进制会流到 Step 6
+              if grep -q 'sram\[d\]\[i\].*<=' "$f"; then
+                echo "[ERROR] $f 补丁后仍然存在 <=，补丁失败" >&2
+                exit 1
+              fi
+              echo "OK: $f 补丁已生效"
+            else
+              echo "[INFO] $f 里没有 sram[d][i] <= 这种写法，无需补丁"
+            fi
+          done
 
           echo "########## 检查 helloworld.hex 的内容 ##########"
           {
