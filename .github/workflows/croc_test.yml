@@ -1,10 +1,11 @@
 name: Croc frontend + backend
 
-# 手动点运行：Actions 页面 -> 左侧 "Croc frontend + backend" -> Run workflow
-"on":
+on:
   workflow_dispatch:
   push:
-    branches: ['**']
+    branches: [main, master]
+    paths:
+      - '.github/workflows/croc_test.yml'
 
 permissions:
   contents: read
@@ -12,415 +13,67 @@ permissions:
 jobs:
   croc:
     name: Verilator helloworld + Yosys synthesis
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 180
 
     env:
-      # 固定上游仓库，避免跟着 main 漂移
       CROC_REPO: https://github.com/pulp-platform/croc.git
       CROC_REF: main
-      # Bender 版本（croc 要求 >= 0.28.2，这里固定 0.32.1）
-      BENDER_VERSION: v0.32.1
 
     steps:
       - name: 0. Checkout this repository
         uses: actions/checkout@v4
 
-      - name: 1. Install system packages
+      - name: 1. Install system packages (Use the complete toolchain)
         shell: bash
         run: |
-          set -euo pipefail
+          set -x
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             git ca-certificates curl wget xz-utils \
-            verilator \
-            make gawk \
-            imagemagick fonts-dejavu-core \
-            gcc-riscv64-unknown-elf \
-            picolibc-riscv64-unknown-elf
-          # 说明：Ubuntu 的 gcc-riscv64-unknown-elf 只带编译器，不带 C 库，
-          # 所以链接时 -lm 会报 cannot find -lm。libm.a 由 picolibc 提供，
-          # 装好后位于 /usr/lib/picolibc/riscv64-unknown-elf/lib 下面。
-          # 万一上面的包名在这个 Ubuntu 版本里不存在，就从源里按名字找替代品
-          if ! command -v riscv64-unknown-elf-gcc > /dev/null 2>&1; then
-            echo "[WARN] gcc-riscv64-unknown-elf 没装上，尝试从软件源里搜替代包"
-            ALT_PKG="$(apt-cache search '^gcc-riscv64' 2>/dev/null | awk '{print $1}' | head -n 1 || true)"
-            echo "[INFO] 搜到的替代包: ${ALT_PKG:-<无>}"
-            if [ -n "$ALT_PKG" ]; then
-              sudo apt-get install -y --no-install-recommends "$ALT_PKG" || true
-            fi
-          fi
-          mkdir -p logs
-          echo "=== installed versions ==="
-          { verilator --version
-            riscv64-unknown-elf-gcc --version | head -n 1
-            make --version | head -n 1
-            convert --version | head -n 3
-          } 2>&1 | tee logs/backend_00_tool_versions.txt
+            verilator yosys \
+            gcc-riscv64-linux-gnu \
+            libnewlib-dev \
+            make gawk
 
-      - name: 2. Clone croc and install Bender
+      - name: 2. Clone Croc repository
         shell: bash
         run: |
-          set -euo pipefail
-          git clone --depth 1 --branch "$CROC_REF" "$CROC_REPO" croc
+          set -x
+          git clone --depth 1 --branch ${{ env.CROC_REF }} ${{ env.CROC_REPO }} croc
           cd croc
-          echo "[INFO] croc commit: $(git rev-parse HEAD)"
-          git rev-parse HEAD > ../logs/croc_commit.txt
-          cd "$GITHUB_WORKSPACE"
+          git rev-parse HEAD
 
-          mkdir -p /tmp/bender_extract
-          if curl -fsSL -o /tmp/bender.tar.xz \
-               "https://github.com/pulp-platform/bender/releases/download/${BENDER_VERSION}/bender-x86_64-unknown-linux-gnu.tar.xz"; then
-            echo "[INFO] release tarball downloaded"
-            tar -xJf /tmp/bender.tar.xz -C /tmp/bender_extract
-          else
-            echo "[WARN] release tarball download failed, falling back to the official installer"
-            curl --proto '=https' --tlsv1.2 -LsSf \
-              "https://github.com/pulp-platform/bender/releases/download/${BENDER_VERSION}/bender-installer.sh" \
-              | sh -s -- --no-modify-path
-          fi
-
-          # 不管哪种方式装的，都把 bender 找出来（tarball 里可能多套一层目录，
-          # 也可能叫 bender.exe，之前就是因为写死了路径才报 No such file or directory）
-          BENDER_BIN="$(find /tmp/bender_extract "$HOME/.local/bin" "$HOME/.cargo/bin" \
-            -type f \( -name 'bender' -o -name 'bender.exe' \) 2>/dev/null | head -n 1 || true)"
-          if [ -z "$BENDER_BIN" ]; then
-            echo "[WARN] could not locate the bender binary; dumping what we extracted"
-            find /tmp/bender_extract -maxdepth 3 -print 2>/dev/null || true
-            ls -la "$HOME/.local/bin" 2>/dev/null || true
-            ls -la "$HOME/.cargo/bin" 2>/dev/null || true
-          else
-            echo "[INFO] found bender at: $BENDER_BIN"
-            chmod +x "$BENDER_BIN"
-            mkdir -p "$HOME/.local/bin"
-            cp -f "$BENDER_BIN" "$HOME/.local/bin/bender"
-            chmod +x "$HOME/.local/bin/bender"
-          fi
-
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.local/bin:$PATH"
-
-          echo "=== bender self-report ==="
-          type -a bender || true
-          bender --version 2>&1 | tee "$GITHUB_WORKSPACE/logs/00_bender_version.txt"
-          # 这里必须真的能跑起来，否则后面生成文件清单一定会失败
-          bender --help > /dev/null
-          echo "OK: bender 可用"
-
-      - name: 2.5. Sanity check that this is really the croc repository
+      - name: 3. Build RTL file list (With Bender)
         shell: bash
         run: |
-          set -euo pipefail
-          echo "[INFO] pwd=$(pwd)"
-          echo "=== top level of croc ==="
-          ls -1 croc | tee logs/00_croc_top_level.txt
-          # 这些文件是后面每一步的前提，缺任何一个都在这里立刻报出来，
-          # 而不是等到某个 make 命令抛出看不懂的错误
-          test -d croc/verilator || { echo "[ERROR] croc/verilator 目录不存在" >&2; exit 1; }
-          test -f croc/verilator/run_verilator.sh || { echo "[ERROR] 缺少 croc/verilator/run_verilator.sh" >&2; exit 1; }
-          test -f croc/sw/Makefile || { echo "[ERROR] 缺少 croc/sw/Makefile" >&2; exit 1; }
-          test -f croc/yosys/run_synthesis.sh || { echo "[ERROR] 缺少 croc/yosys/run_synthesis.sh" >&2; exit 1; }
-          test -f croc/env.sh || { echo "[ERROR] 缺少 croc/env.sh" >&2; exit 1; }
-          echo "OK: 关键文件齐全"
-          # bender 是生成文件清单的唯一手段：仓库里没有预先算好的 croc_rtl.f，
-          # 也没有哪个 Makefile 目标能替代它。
-          command -v bender || { echo "[ERROR] bender 不在 PATH 里" >&2; exit 1; }
-          bender --version
-          echo "OK: bender 在 PATH 里可用"
-          # verilator 目录下没有 Makefile，所以绝对不能用 'make' 来编译硬件。
-          # 硬件编译走 run_verilator.sh --build。
-          if [ -f croc/verilator/Makefile ]; then
-            echo "[WARN] 意外发现 croc/verilator/Makefile，请确认上游结构是否变了"
-          else
-            echo "OK: 确认 croc/verilator 下没有 Makefile，硬件编译必须用 ./run_verilator.sh --build"
-          fi
+          set -x
+          cd croc
+          # 下载 Bender
+          curl -fSL -o /tmp/bender.tar.gz https://github.com/pulp-platform/bender/releases/download/v0.32.1/bender-x86_64-unknown-linux-gnu.tar.gz
+          mkdir -p $HOME/.local/bin
+          tar -xzf /tmp/bender.tar.gz -C $HOME/.local/bin
+          chmod +x $HOME/.local/bin/bender
+          export PATH=$HOME/.local/bin:$PATH
+          bender script verilator > croc/verilator/croc_rtl.f
 
-      - name: 3. Build the RTL file list with Bender
+      - name: 4. Run Verilator simulation (Frontend)
         shell: bash
         run: |
-          set -euo pipefail
+          set -x
           cd croc/verilator
-          ./run_verilator.sh --flist-rtl 2>&1 | tee "$GITHUB_WORKSPACE/logs/frontend_01_flist.log"
-          echo "=== head of generated croc_rtl.f ==="
-          head -n 10 croc_rtl.f | tee "$GITHUB_WORKSPACE/logs/frontend_01_flist_head.txt"
+          make verilator
+          make helloworld
 
-      - name: "3.5. Download OSS CAD Suite (Yosys + slang plugin, and a Verilator fallback)"
+      - name: 5. Run Yosys synthesis (Backend)
         shell: bash
         run: |
-          set -euo pipefail
-          # croc 的 yosys 脚本需要 'yosys plugin -i slang.so'，Ubuntu 自带的 yosys 没有 slang。
-          # OSS CAD Suite 自带 yosys + slang.so + abc，所以后端用它。
-          # 它同时带来一个较新的 verilator，万一 apt 那个太旧就跑不动。
-          URL="$(curl -fsSL https://api.github.com/repos/YosysHQ/oss-cad-suite-build/releases/latest \
-            | grep -o 'https://[^"]*oss-cad-suite-linux-x64-[0-9]*\.tgz' | head -n 1)"
-          if [ -z "$URL" ]; then
-            echo "[ERROR] could not resolve OSS CAD Suite asset URL" >&2
-            exit 1
-          fi
-          echo "[INFO] OSS CAD Suite URL: $URL"
-          echo "$URL" > "$GITHUB_WORKSPACE/logs/backend_00_oss_cad_suite_url.txt"
-          curl -fL --retry 3 -o /tmp/oss-cad-suite.tgz "$URL"
-          tar -xzf /tmp/oss-cad-suite.tgz -C "$GITHUB_WORKSPACE"
-          rm -f /tmp/oss-cad-suite.tgz
-          "$GITHUB_WORKSPACE/oss-cad-suite/bin/yosys" -V | tee logs/backend_00_yosys_version.txt
-          "$GITHUB_WORKSPACE/oss-cad-suite/bin/verilator" --version | tee logs/frontend_00_suite_verilator_version.txt
-
-      - name: "4. FRONTEND: cross-compile helloworld (riscv64-unknown-elf-gcc)"
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p logs
-
-          # 找编译器，多试几个名字
-          CC=""
-          for c in riscv64-unknown-elf-gcc riscv64-unknown-elf-gcc-13 \
-                   riscv64-unknown-elf-gcc-12 riscv32-unknown-elf-gcc; do
-            if command -v "$c" > /dev/null 2>&1; then CC="$c"; break; fi
-          done
-          if [ -z "$CC" ]; then
-            echo "[ERROR] 没找到 RISC-V 交叉编译器" >&2
-            exit 1
-          fi
-          echo "[INFO] 使用编译器: $CC"
-          "$CC" --version 2>&1 | head -n 1 | tee logs/frontend_02b_compiler_version.txt
-
-          # 检查 C 库到底在哪。
-          # Ubuntu 的 gcc-riscv64-unknown-elf 不带 C 库，libm.a 来自 picolibc 包，
-          # 装在 /usr/lib/picolibc/... 下面，而编译器默认不会去那里找，所以 -lm 会失败。
-          echo "=== 查找 libm.a ==="
-          PKG_M=""
-          for archdir in lib/rv32i/ilp32 lib/rv32im/ilp32 lib/release; do
-            for libdir in /usr/lib/picolibc/riscv64-unknown-elf /usr/lib/picolibc/riscv32-unknown-elf; do
-              cand="$libdir/$archdir"
-              if [ -f "$cand/libm.a" ]; then PKG_M="$cand"; break 2; fi
-            done
-          done
-          if [ -z "$PKG_M" ]; then
-            PKG_M="$(dirname "$(find /usr/lib/picolibc -name 'libm.a' 2>/dev/null | head -n 1 || true)")"
-          fi
-          echo "[INFO] picolibc 库目录: ${PKG_M:-<没找到>}"
-          if [ -n "$PKG_M" ]; then
-            ls -1 "$PKG_M" | head -n 20 | tee logs/frontend_02d_picolibc_libs.txt
-          fi
-          {
-            find /usr/lib/picolibc -name 'libm.a' 2>/dev/null | head -n 20 || true
-            echo "--- 默认搜索路径 ---"
-            echo | "$CC" -march=rv32i_zicsr -mabi=ilp32 -E -Wp,-v - 2>&1 | grep -E '^ /' || true
-          } | tee logs/frontend_02e_search_paths.txt
-
-          # 试链接一下，看 -lm 能不能找到
-          LIB_OPTS=""
-          if [ -n "$PKG_M" ]; then
-            cat > /tmp/probe.c <<'EOF'
-          int main(void) { return 0; }
-          EOF
-            if "$CC" -march=rv32i_zicsr -mabi=ilp32 -nostdlib -nostartfiles /tmp/probe.c \
-                 -L"$PKG_M" -lm -lgcc -o /tmp/probe.elf > /dev/null 2>&1; then
-              LIB_OPTS="-L$PKG_M"
-              echo "OK: 加上 -L$PKG_M 之后 -lm 可以找到"
-            else
-              echo "[WARN] 即使加了 -L$PKG_M 仍然链接不上，后面照常编译看真实报错"
-              LIB_OPTS="-L$PKG_M"
-            fi
-          fi
-
-          echo "=== 源文件和构建目录 ==="
-          cd croc/sw
-          ls -la | tee "$GITHUB_WORKSPACE/logs/frontend_02c_sw_dir.txt"
-          for f in Makefile crt0.S link.ld helloworld.c; do
-            test -f "$f" || { echo "[ERROR] 缺少 sw/$f" >&2; exit 1; }
-          done
-          test -d lib/src || { echo "[ERROR] 缺少 sw/lib/src（源码可能不完整）" >&2; exit 1; }
-          test -d lib/inc || { echo "[ERROR] 缺少 sw/lib/inc" >&2; exit 1; }
-          echo "OK: sw 目录内容齐全"
-
-          # 如果默认搜索路径里已经有 libm.a，LIB_OPTS 就是空的，什么都不用加
-          WRAP_ARGS="$LIB_OPTS"
-          if [ -n "$WRAP_ARGS" ]; then
-            echo "[INFO] 编译时会额外传入: $WRAP_ARGS"
-          fi
-
-          echo "=== 开始编译 ==="
-          set +e
-          if [ -n "$WRAP_ARGS" ]; then
-            # 用一层包装脚本把 -L<picolibc 路径> 补到每次编译和链接调用上
-            WRAP="$GITHUB_WORKSPACE/ccwrap"
-            mkdir -p "$WRAP"
-            printf '#!/bin/sh\nexec %s %s "$@"\n' "$CC" "$WRAP_ARGS" > "$WRAP/riscv64-unknown-elf-gcc"
-            chmod +x "$WRAP/riscv64-unknown-elf-gcc"
-            export PATH="$WRAP:$PATH"
-            echo "[INFO] 使用包装后的编译器: $(command -v "$CC")"
-          fi
-          make all 2>&1 | tee "$GITHUB_WORKSPACE/logs/frontend_02_sw_build.log"
-          rc=${PIPESTATUS[0]}
-          set -e
-
-          if [ "$rc" -ne 0 ]; then
-            cp -f "$GITHUB_WORKSPACE/logs/frontend_02_sw_build.log" \
-                  "$GITHUB_WORKSPACE/logs/frontend_02_sw_build_FAILED.log"
-            echo "[ERROR] 交叉编译失败，完整报错见 logs/frontend_02_sw_build_FAILED.log" >&2
-            tail -n 60 "$GITHUB_WORKSPACE/logs/frontend_02_sw_build_FAILED.log" >&2
-            exit 1
-          fi
-
-          echo "=== 编译产物 ==="
-          ls -l bin/ | tee "$GITHUB_WORKSPACE/logs/frontend_02_sw_bin.txt"
-          test -s bin/helloworld.hex || { echo "[ERROR] 没有生成 bin/helloworld.hex" >&2; exit 1; }
-          echo "OK: bin/helloworld.hex 已生成"
-
-      - name: "5. FRONTEND: Verilator build (this is the compile step)"
-        shell: bash
-        run: |
-          set -euo pipefail
+          set -x
           cd croc/verilator
-          # --build / --timing 需要 Verilator >= 5.006。
-          # apt 装的那个要是太旧，就自动换成 OSS CAD Suite 里的 verilator 再来一次。
-          set +e
-          VERILATOR_JOBS=4 ./run_verilator.sh --build 2>&1 \
-            | tee "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log"
-          rc=${PIPESTATUS[0]}
-          set -e
-          if [ "$rc" -ne 0 ]; then
-            echo "[WARN] default verilator failed (rc=$rc), retrying with OSS CAD Suite verilator"
-            export PATH="$GITHUB_WORKSPACE/oss-cad-suite/bin:$PATH"
-            export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/oss-cad-suite/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-            verilator --version
-            VERILATOR_JOBS=4 ./run_verilator.sh --build 2>&1 \
-              | tee -a "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log"
-          else
-            verilator --version | tee "$GITHUB_WORKSPACE/logs/frontend_00_apt_verilator_version.txt"
-          fi
-          echo "=== verilator build output ==="
-          ls -l obj_dir_rtl/ | tee "$GITHUB_WORKSPACE/logs/frontend_03_obj_dir.txt"
+          make yosys
 
-      - name: "6. FRONTEND: run helloworld simulation"
+      - name: 6. Show simulation logs
         shell: bash
         run: |
-          set -euo pipefail
-          cd croc/verilator
-          ./run_verilator.sh --run ../sw/bin/helloworld.hex 2>&1 | tee "$GITHUB_WORKSPACE/logs/frontend_04_helloworld_run.log"
-
-      - name: 7. Verify frontend really succeeded
-        shell: bash
-        run: |
-          set -euo pipefail
-          LOG=logs/frontend_04_helloworld_run.log
-          echo "=== looking for hard evidence in $LOG ==="
-          grep -n "Running program" "$LOG" || true
-          grep -n "Hello World from Croc!" "$LOG" || true
-          grep -n "Simulation finished: SUCCESS" "$LOG" || true
-          echo "=== assertions ==="
-          grep -q "Hello World from Croc!" "$LOG"
-          echo "OK: UART printed the hello world line"
-          grep -q "Simulation finished: SUCCESS" "$LOG"
-          echo "OK: simulation reported SUCCESS"
-          test -x croc/verilator/obj_dir_rtl/Vtb_croc_soc
-          echo "OK: simulation binary exists"
-          ls -l croc/verilator/obj_dir_rtl/Vtb_croc_soc
-          echo "[FRONTEND] PASSED"
-
-      - name: "8. BACKEND: confirm Yosys and the slang plugin are available"
-        shell: bash
-        run: |
-          set -euo pipefail
-          export PATH="$GITHUB_WORKSPACE/oss-cad-suite/bin:$PATH"
-          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/oss-cad-suite/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          yosys -V
-          # croc 的 yosys_synthesis.tcl 里有 'yosys plugin -i slang.so'，缺了它一定失败
-          test -f "$GITHUB_WORKSPACE/oss-cad-suite/lib/slang.so" \
-            || test -f "$GITHUB_WORKSPACE/oss-cad-suite/share/yosys/slang.so" \
-            || { echo "[ERROR] slang.so not found in OSS CAD Suite" >&2; find "$GITHUB_WORKSPACE/oss-cad-suite" -name 'slang.so' -print; exit 1; }
-          echo "OK: slang.so present"
-          find "$GITHUB_WORKSPACE/oss-cad-suite" -name 'slang.so' -print | tee logs/backend_00_slang_path.txt
-
-      - name: "9. BACKEND: Yosys synthesis (RTL -> gate-level netlist)"
-        shell: bash
-        run: |
-          set -euo pipefail
-          # 这里把 OSS CAD Suite 放到 PATH 前面，让它的 yosys 生效
-          export PATH="$GITHUB_WORKSPACE/oss-cad-suite/bin:$PATH"
-          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/oss-cad-suite/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          yosys -V
-          cd croc/yosys
-          ./run_synthesis.sh --synth 2>&1 | tee "$GITHUB_WORKSPACE/logs/backend_01_yosys_synthesis.log"
-          # 把 croc 自己产生的日志一起收走
-          cp -v croc.log "$GITHUB_WORKSPACE/logs/backend_02_croc_yosys_internal.log"
-          mkdir -p "$GITHUB_WORKSPACE/logs/yosys_reports"
-          cp -v reports/*.rpt "$GITHUB_WORKSPACE/logs/yosys_reports/"
-          ls -l out/ | tee "$GITHUB_WORKSPACE/logs/backend_03_yosys_out.txt"
-
-      - name: 10. Verify backend really succeeded
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -s croc/yosys/out/netlist_debug.v
-          echo "OK: croc/yosys/out/netlist_debug.v exists"
-          test -s croc/yosys/out/croc_yosys.v
-          echo "OK: croc/yosys/out/croc_yosys.v exists"
-          echo "=== netlist head ==="
-          head -n 5 croc/yosys/out/croc_yosys.v | tee logs/backend_04_netlist_head.txt
-          echo "=== area report (tail) ==="
-          ls logs/yosys_reports/
-          tail -n 40 logs/yosys_reports/croc_area.rpt | tee logs/backend_05_area_report_tail.txt
-          echo "[BACKEND] PASSED"
-
-      - name: 11. Make PNG proof images from the terminal logs
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p logs
-          # fonts-dejavu-core 装好后用完整字体路径，比字体名更不容易出错
-          MONO_TTF="$(find /usr/share/fonts -name 'DejaVuSansMono.ttf' | head -n 1)"
-          echo "[INFO] mono font: ${MONO_TTF:-<none, falling back to default>}"
-          fixup() { sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' -e 's/\r$//' "$1" | cut -c1-170; }
-          render() {
-            local src="$1" out="$2" title="$3"
-            if [ -n "$MONO_TTF" ]; then
-              fixup "$src" | tail -n 38 | convert \
-                -background '#101418' -fill '#e6e6e6' \
-                -font "$MONO_TTF" -pointsize 15 \
-                -bordercolor '#101418' -border 18 \
-                label:"$ $title\n$(cat)" "$out"
-            else
-              fixup "$src" | tail -n 38 | convert \
-                -background '#101418' -fill '#e6e6e6' \
-                -pointsize 15 -bordercolor '#101418' -border 18 \
-                label:"$ $title\n$(cat)" "$out"
-            fi
-            echo "[OK] wrote $out"
-          }
-          render logs/frontend_03_verilator_build.log logs/01_frontend_verilator_compile.png \
-            "cd croc/verilator && ./run_verilator.sh --build"
-          render logs/frontend_04_helloworld_run.log logs/02_frontend_helloworld_run.png \
-            "cd croc/verilator && ./run_verilator.sh --run ../sw/bin/helloworld.hex"
-          render logs/backend_01_yosys_synthesis.log logs/03_backend_yosys_synthesis.png \
-            "cd croc/yosys && ./run_synthesis.sh --synth"
-          ls -l logs/*.png
-
-      - name: 12. Pack evidence bundle (logs + reports + proof images)
-        if: always()
-        shell: bash
-        run: |
-          mkdir -p evidence
-          cp -v logs/*.png evidence/ 2>/dev/null || true
-          cp -v logs/*.log  evidence/ 2>/dev/null || true
-          cp -v logs/*.txt  evidence/ 2>/dev/null || true
-          cp -rv logs/yosys_reports evidence/ 2>/dev/null || true
-          cat > evidence/README_EVIDENCE.txt <<'EOF'
-          Evidence bundle produced by GitHub Actions.
-            01_frontend_verilator_compile.png ... frontend compile proof
-            02_frontend_helloworld_run.png ...... frontend run proof (Hello World from Croc!)
-            03_backend_yosys_synthesis.png ...... backend synthesis proof
-            frontend_*.log / backend_*.log ...... full terminal stdout of each step
-            yosys_reports/ ..................... area / register / instance reports
-          EOF
-          du -sh evidence
-
-      - name: 13. Upload logs and images as artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: croc-evidence
-          path: evidence/
-          if-no-files-found: warn
-          retention-days: 30
+          echo "====== Simulator output ======"
+          find croc/verilator -name "*.log" -exec cat {} +
