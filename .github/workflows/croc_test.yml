@@ -29,14 +29,23 @@ jobs:
       - name: 1. Install system packages
         shell: bash
         run: |
-          set -x
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             git ca-certificates curl wget xz-utils \
             verilator \
-            gcc-riscv64-unknown-elf \
             make gawk \
-            imagemagick fonts-dejavu-core
+            imagemagick fonts-dejavu-core \
+            gcc-riscv64-unknown-elf
+          # 万一上面的包名在这个 Ubuntu 版本里不存在，就从源里按名字找替代品
+          if ! command -v riscv64-unknown-elf-gcc > /dev/null 2>&1; then
+            echo "[WARN] gcc-riscv64-unknown-elf 没装上，尝试从软件源里搜替代包"
+            ALT_PKG="$(apt-cache search '^gcc-riscv64' 2>/dev/null | awk '{print $1}' | head -n 1 || true)"
+            echo "[INFO] 搜到的替代包: ${ALT_PKG:-<无>}"
+            if [ -n "$ALT_PKG" ]; then
+              sudo apt-get install -y --no-install-recommends "$ALT_PKG" || true
+            fi
+          fi
           mkdir -p logs
           echo "=== installed versions ==="
           { verilator --version
@@ -156,10 +165,72 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p logs
+
+          echo "=== 先确认编译器到底有没有装上 ==="
+          {
+            echo "--- which ---"
+            for c in riscv64-unknown-elf-gcc riscv64-unknown-elf-gcc-13 \
+                     riscv64-unknown-elf-gcc-14 riscv32-unknown-elf-gcc \
+                     riscv64-linux-gnu-gcc; do
+              printf '%-28s %s\n' "$c" "$(command -v "$c" || echo '<not found>')"
+            done
+            echo "--- apt 相关包 ---"
+            dpkg -l 2>/dev/null | grep -iE 'riscv|gcc-1[0-9]' | awk '{print $2, $3, $4}' || true
+            echo "--- PATH ---"
+            echo "$PATH"
+          } 2>&1 | tee logs/frontend_02a_compiler_probe.txt
+
+          CC="$(command -v riscv64-unknown-elf-gcc || true)"
+          if [ -z "$CC" ]; then
+            echo "[ERROR] riscv64-unknown-elf-gcc 不在 PATH 里，软件没法交叉编译" >&2
+            exit 1
+          fi
+          echo "[INFO] 编译器: $CC"
+          "$CC" --version 2>&1 | tee logs/frontend_02b_compiler_version.txt
+
+          echo "=== 源文件和构建目录 ==="
           cd croc/sw
+          ls -la | tee "$GITHUB_WORKSPACE/logs/frontend_02c_sw_dir.txt"
+          for f in Makefile crt0.S link.ld helloworld.c; do
+            test -f "$f" || { echo "[ERROR] 缺少 sw/$f" >&2; exit 1; }
+          done
+          test -d lib/src || { echo "[ERROR] 缺少 sw/lib/src（源码可能不完整）" >&2; exit 1; }
+          test -d lib/inc || { echo "[ERROR] 缺少 sw/lib/inc" >&2; exit 1; }
+          echo "OK: sw 目录内容齐全"
+
+          echo "=== 开始编译 ==="
+          set +e
           make all 2>&1 | tee "$GITHUB_WORKSPACE/logs/frontend_02_sw_build.log"
-          echo "=== generated software artifacts ==="
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            # 把第一次的真实报错单独留一份，免得被后面的重试覆盖掉
+            cp -f "$GITHUB_WORKSPACE/logs/frontend_02_sw_build.log" \
+                  "$GITHUB_WORKSPACE/logs/frontend_02_sw_build_FAILED.log"
+            echo "[WARN] 默认编译失败（rc=$rc），怀疑是 GCC 对 -march=rv32i_zicsr 的解释不同"
+            make clean > /dev/null 2>&1 || true
+            # 用一层包装脚本给编译器统一补上 -misa-spec=20191213，再重试一次
+            WRAP="$GITHUB_WORKSPACE/ccwrap"
+            mkdir -p "$WRAP"
+            printf '#!/bin/sh\nexec %s -misa-spec=20191213 "$@"\n' "$CC" > "$WRAP/riscv64-unknown-elf-gcc"
+            chmod +x "$WRAP/riscv64-unknown-elf-gcc"
+            export PATH="$WRAP:$PATH"
+            riscv64-unknown-elf-gcc --version | head -n 1
+            make all 2>&1 | tee -a "$GITHUB_WORKSPACE/logs/frontend_02_sw_build.log"
+            rc=${PIPESTATUS[0]}
+          fi
+          set -e
+
+          if [ "$rc" -ne 0 ]; then
+            echo "[ERROR] 交叉编译仍然失败，真实报错见 logs/frontend_02_sw_build_FAILED.log" >&2
+            tail -n 60 "$GITHUB_WORKSPACE/logs/frontend_02_sw_build_FAILED.log" >&2
+            exit 1
+          fi
+
+          echo "=== 编译产物 ==="
           ls -l bin/ | tee "$GITHUB_WORKSPACE/logs/frontend_02_sw_bin.txt"
+          test -s bin/helloworld.hex || { echo "[ERROR] 没有生成 bin/helloworld.hex" >&2; exit 1; }
+          echo "OK: bin/helloworld.hex 已生成"
 
       - name: "5. FRONTEND: Verilator build (this is the compile step)"
         shell: bash
