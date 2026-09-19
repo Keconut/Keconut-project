@@ -53,13 +53,46 @@ jobs:
           cd croc
           echo "[INFO] croc commit: $(git rev-parse HEAD)"
           git rev-parse HEAD > ../logs/croc_commit.txt
-          # Bender 从官方 release 拿 x86_64 Linux 预编译二进制
-          curl -fsSL -o /tmp/bender.tar.xz \
-            "https://github.com/pulp-platform/bender/releases/download/${BENDER_VERSION}/bender-x86_64-unknown-linux-gnu.tar.xz"
-          mkdir -p "$HOME/.local/bin"
-          tar -xJf /tmp/bender.tar.xz -C "$HOME/.local/bin"
+          cd "$GITHUB_WORKSPACE"
+
+          mkdir -p /tmp/bender_extract
+          if curl -fsSL -o /tmp/bender.tar.xz \
+               "https://github.com/pulp-platform/bender/releases/download/${BENDER_VERSION}/bender-x86_64-unknown-linux-gnu.tar.xz"; then
+            echo "[INFO] release tarball downloaded"
+            tar -xJf /tmp/bender.tar.xz -C /tmp/bender_extract
+          else
+            echo "[WARN] release tarball download failed, falling back to the official installer"
+            curl --proto '=https' --tlsv1.2 -LsSf \
+              "https://github.com/pulp-platform/bender/releases/download/${BENDER_VERSION}/bender-installer.sh" \
+              | sh -s -- --no-modify-path
+          fi
+
+          # 不管哪种方式装的，都把 bender 找出来（tarball 里可能多套一层目录，
+          # 也可能叫 bender.exe，之前就是因为写死了路径才报 No such file or directory）
+          BENDER_BIN="$(find /tmp/bender_extract "$HOME/.local/bin" "$HOME/.cargo/bin" \
+            -type f \( -name 'bender' -o -name 'bender.exe' \) 2>/dev/null | head -n 1 || true)"
+          if [ -z "$BENDER_BIN" ]; then
+            echo "[WARN] could not locate the bender binary; dumping what we extracted"
+            find /tmp/bender_extract -maxdepth 3 -print 2>/dev/null || true
+            ls -la "$HOME/.local/bin" 2>/dev/null || true
+            ls -la "$HOME/.cargo/bin" 2>/dev/null || true
+          else
+            echo "[INFO] found bender at: $BENDER_BIN"
+            chmod +x "$BENDER_BIN"
+            mkdir -p "$HOME/.local/bin"
+            cp -f "$BENDER_BIN" "$HOME/.local/bin/bender"
+            chmod +x "$HOME/.local/bin/bender"
+          fi
+
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/bender" --version
+          export PATH="$HOME/.local/bin:$PATH"
+
+          echo "=== bender self-report ==="
+          type -a bender || true
+          bender --version 2>&1 | tee "$GITHUB_WORKSPACE/logs/00_bender_version.txt"
+          # 这里必须真的能跑起来，否则后面生成文件清单一定会失败
+          bender --help > /dev/null
+          echo "OK: bender 可用"
 
       - name: 2.5. Sanity check that this is really the croc repository
         shell: bash
@@ -76,6 +109,11 @@ jobs:
           test -f croc/yosys/run_synthesis.sh || { echo "[ERROR] 缺少 croc/yosys/run_synthesis.sh" >&2; exit 1; }
           test -f croc/env.sh || { echo "[ERROR] 缺少 croc/env.sh" >&2; exit 1; }
           echo "OK: 关键文件齐全"
+          # bender 是生成文件清单的唯一手段：仓库里没有预先算好的 croc_rtl.f，
+          # 也没有哪个 Makefile 目标能替代它。
+          command -v bender || { echo "[ERROR] bender 不在 PATH 里" >&2; exit 1; }
+          bender --version
+          echo "OK: bender 在 PATH 里可用"
           # verilator 目录下没有 Makefile，所以绝对不能用 'make' 来编译硬件。
           # 硬件编译走 run_verilator.sh --build。
           if [ -f croc/verilator/Makefile ]; then
