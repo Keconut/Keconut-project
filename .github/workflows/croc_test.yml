@@ -36,7 +36,11 @@ jobs:
             verilator \
             make gawk \
             imagemagick fonts-dejavu-core \
-            gcc-riscv64-unknown-elf
+            gcc-riscv64-unknown-elf \
+            picolibc-riscv64-unknown-elf
+          # 说明：Ubuntu 的 gcc-riscv64-unknown-elf 只带编译器，不带 C 库，
+          # 所以链接时 -lm 会报 cannot find -lm。libm.a 由 picolibc 提供，
+          # 装好后位于 /usr/lib/picolibc/riscv64-unknown-elf/lib 下面。
           # 万一上面的包名在这个 Ubuntu 版本里不存在，就从源里按名字找替代品
           if ! command -v riscv64-unknown-elf-gcc > /dev/null 2>&1; then
             echo "[WARN] gcc-riscv64-unknown-elf 没装上，尝试从软件源里搜替代包"
@@ -167,27 +171,58 @@ jobs:
           set -euo pipefail
           mkdir -p logs
 
-          echo "=== 先确认编译器到底有没有装上 ==="
-          {
-            echo "--- which ---"
-            for c in riscv64-unknown-elf-gcc riscv64-unknown-elf-gcc-13 \
-                     riscv64-unknown-elf-gcc-14 riscv32-unknown-elf-gcc \
-                     riscv64-linux-gnu-gcc; do
-              printf '%-28s %s\n' "$c" "$(command -v "$c" || echo '<not found>')"
-            done
-            echo "--- apt 相关包 ---"
-            dpkg -l 2>/dev/null | grep -iE 'riscv|gcc-1[0-9]' | awk '{print $2, $3, $4}' || true
-            echo "--- PATH ---"
-            echo "$PATH"
-          } 2>&1 | tee logs/frontend_02a_compiler_probe.txt
-
-          CC="$(command -v riscv64-unknown-elf-gcc || true)"
+          # 找编译器，多试几个名字
+          CC=""
+          for c in riscv64-unknown-elf-gcc riscv64-unknown-elf-gcc-13 \
+                   riscv64-unknown-elf-gcc-12 riscv32-unknown-elf-gcc; do
+            if command -v "$c" > /dev/null 2>&1; then CC="$c"; break; fi
+          done
           if [ -z "$CC" ]; then
-            echo "[ERROR] riscv64-unknown-elf-gcc 不在 PATH 里，软件没法交叉编译" >&2
+            echo "[ERROR] 没找到 RISC-V 交叉编译器" >&2
             exit 1
           fi
-          echo "[INFO] 编译器: $CC"
-          "$CC" --version 2>&1 | tee logs/frontend_02b_compiler_version.txt
+          echo "[INFO] 使用编译器: $CC"
+          "$CC" --version 2>&1 | head -n 1 | tee logs/frontend_02b_compiler_version.txt
+
+          # 检查 C 库到底在哪。
+          # Ubuntu 的 gcc-riscv64-unknown-elf 不带 C 库，libm.a 来自 picolibc 包，
+          # 装在 /usr/lib/picolibc/... 下面，而编译器默认不会去那里找，所以 -lm 会失败。
+          echo "=== 查找 libm.a ==="
+          PKG_M=""
+          for archdir in lib/rv32i/ilp32 lib/rv32im/ilp32 lib/release; do
+            for libdir in /usr/lib/picolibc/riscv64-unknown-elf /usr/lib/picolibc/riscv32-unknown-elf; do
+              cand="$libdir/$archdir"
+              if [ -f "$cand/libm.a" ]; then PKG_M="$cand"; break 2; fi
+            done
+          done
+          if [ -z "$PKG_M" ]; then
+            PKG_M="$(dirname "$(find /usr/lib/picolibc -name 'libm.a' 2>/dev/null | head -n 1 || true)")"
+          fi
+          echo "[INFO] picolibc 库目录: ${PKG_M:-<没找到>}"
+          if [ -n "$PKG_M" ]; then
+            ls -1 "$PKG_M" | head -n 20 | tee logs/frontend_02d_picolibc_libs.txt
+          fi
+          {
+            find /usr/lib/picolibc -name 'libm.a' 2>/dev/null | head -n 20 || true
+            echo "--- 默认搜索路径 ---"
+            echo | "$CC" -march=rv32i_zicsr -mabi=ilp32 -E -Wp,-v - 2>&1 | grep -E '^ /' || true
+          } | tee logs/frontend_02e_search_paths.txt
+
+          # 试链接一下，看 -lm 能不能找到
+          LIB_OPTS=""
+          if [ -n "$PKG_M" ]; then
+            cat > /tmp/probe.c <<'EOF'
+          int main(void) { return 0; }
+          EOF
+            if "$CC" -march=rv32i_zicsr -mabi=ilp32 -nostdlib -nostartfiles /tmp/probe.c \
+                 -L"$PKG_M" -lm -lgcc -o /tmp/probe.elf > /dev/null 2>&1; then
+              LIB_OPTS="-L$PKG_M"
+              echo "OK: 加上 -L$PKG_M 之后 -lm 可以找到"
+            else
+              echo "[WARN] 即使加了 -L$PKG_M 仍然链接不上，后面照常编译看真实报错"
+              LIB_OPTS="-L$PKG_M"
+            fi
+          fi
 
           echo "=== 源文件和构建目录 ==="
           cd croc/sw
@@ -199,30 +234,31 @@ jobs:
           test -d lib/inc || { echo "[ERROR] 缺少 sw/lib/inc" >&2; exit 1; }
           echo "OK: sw 目录内容齐全"
 
+          # 如果默认搜索路径里已经有 libm.a，LIB_OPTS 就是空的，什么都不用加
+          WRAP_ARGS="$LIB_OPTS"
+          if [ -n "$WRAP_ARGS" ]; then
+            echo "[INFO] 编译时会额外传入: $WRAP_ARGS"
+          fi
+
           echo "=== 开始编译 ==="
           set +e
-          make all 2>&1 | tee "$GITHUB_WORKSPACE/logs/frontend_02_sw_build.log"
-          rc=${PIPESTATUS[0]}
-          if [ "$rc" -ne 0 ]; then
-            # 把第一次的真实报错单独留一份，免得被后面的重试覆盖掉
-            cp -f "$GITHUB_WORKSPACE/logs/frontend_02_sw_build.log" \
-                  "$GITHUB_WORKSPACE/logs/frontend_02_sw_build_FAILED.log"
-            echo "[WARN] 默认编译失败（rc=$rc），怀疑是 GCC 对 -march=rv32i_zicsr 的解释不同"
-            make clean > /dev/null 2>&1 || true
-            # 用一层包装脚本给编译器统一补上 -misa-spec=20191213，再重试一次
+          if [ -n "$WRAP_ARGS" ]; then
+            # 用一层包装脚本把 -L<picolibc 路径> 补到每次编译和链接调用上
             WRAP="$GITHUB_WORKSPACE/ccwrap"
             mkdir -p "$WRAP"
-            printf '#!/bin/sh\nexec %s -misa-spec=20191213 "$@"\n' "$CC" > "$WRAP/riscv64-unknown-elf-gcc"
+            printf '#!/bin/sh\nexec %s %s "$@"\n' "$CC" "$WRAP_ARGS" > "$WRAP/riscv64-unknown-elf-gcc"
             chmod +x "$WRAP/riscv64-unknown-elf-gcc"
             export PATH="$WRAP:$PATH"
-            riscv64-unknown-elf-gcc --version | head -n 1
-            make all 2>&1 | tee -a "$GITHUB_WORKSPACE/logs/frontend_02_sw_build.log"
-            rc=${PIPESTATUS[0]}
+            echo "[INFO] 使用包装后的编译器: $(command -v "$CC")"
           fi
+          make all 2>&1 | tee "$GITHUB_WORKSPACE/logs/frontend_02_sw_build.log"
+          rc=${PIPESTATUS[0]}
           set -e
 
           if [ "$rc" -ne 0 ]; then
-            echo "[ERROR] 交叉编译仍然失败，真实报错见 logs/frontend_02_sw_build_FAILED.log" >&2
+            cp -f "$GITHUB_WORKSPACE/logs/frontend_02_sw_build.log" \
+                  "$GITHUB_WORKSPACE/logs/frontend_02_sw_build_FAILED.log"
+            echo "[ERROR] 交叉编译失败，完整报错见 logs/frontend_02_sw_build_FAILED.log" >&2
             tail -n 60 "$GITHUB_WORKSPACE/logs/frontend_02_sw_build_FAILED.log" >&2
             exit 1
           fi
