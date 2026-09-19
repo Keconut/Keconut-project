@@ -1,0 +1,12 @@
+# 云端跑出来的原始日志和截图，由 GitHub Actions 上传成 artifact，不进 git
+logs/*.log
+logs/*.txt
+logs/yosys_reports/
+evidence/
+
+# 工具链和克隆下来的上游仓库，别提交
+oss-cad-suite/
+croc/
+
+# 临时文件
+*.tmp
