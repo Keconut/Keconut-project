@@ -310,25 +310,46 @@ jobs:
         run: |
           set -euo pipefail
           cd croc/verilator
-          # --build / --timing 需要 Verilator >= 5.006。
-          # apt 装的那个要是太旧，就自动换成 OSS CAD Suite 里的 verilator 再来一次。
+
+          # 只用系统自带的 verilator（第 1 步 apt 装的那个）。
+          # 之前这里有个"失败就用 OSS CAD Suite verilator 重试"的兜底，
+          # 那个兜底设了 LD_LIBRARY_PATH=oss-cad-suite/lib，导致 verilator
+          # 加载到不配套的库，连 --version 都直接段错误，所以删掉了。
+          # OSS CAD Suite 只为后端的 slang 保留，前端不碰它。
+          echo "=== verilator 信息 ==="
+          which verilator
+          verilator --version | tee "$GITHUB_WORKSPACE/logs/frontend_00_apt_verilator_version.txt"
+          echo "[INFO] LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-<空>}"
+
+          echo "=== 开始 Verilator 编译 ==="
           set +e
           VERILATOR_JOBS=4 ./run_verilator.sh --build 2>&1 \
             | tee "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log"
           rc=${PIPESTATUS[0]}
           set -e
+
           if [ "$rc" -ne 0 ]; then
-            echo "[WARN] default verilator failed (rc=$rc), retrying with OSS CAD Suite verilator"
-            export PATH="$GITHUB_WORKSPACE/oss-cad-suite/bin:$PATH"
-            export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/oss-cad-suite/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-            verilator --version
-            VERILATOR_JOBS=4 ./run_verilator.sh --build 2>&1 \
-              | tee -a "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log"
-          else
-            verilator --version | tee "$GITHUB_WORKSPACE/logs/frontend_00_apt_verilator_version.txt"
+            # verilator 自己的报错细节默认不刷屏，只给一个 "Exiting due to N error(s)" 摘要。
+            # 把真正的报错行抓出来打印，否则每次只能看到一个没有上下文的摘要。
+            echo "=== 用 --error-limit 重新跑一次，让 verilator 把报错细节打出来 ==="
+            set +e
+            verilator -Wno-fatal -Wno-style -Wno-BLKANDNBLK -Wno-WIDTHEXPAND \
+              -Wno-WIDTHTRUNC -Wno-WIDTHCONCAT -Wno-ASCRANGE \
+              --timing --error-limit 50 --top tb_croc_soc \
+              --lint-only -f croc_rtl.f 2>&1 | tee -a "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log"
+            echo "=== 报错行摘要 ==="
+            grep -nE '%Error|%Warning' "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log" \
+              | head -n 40 | tee -a "$GITHUB_WORKSPACE/logs/frontend_03_verilator_errors.txt" || true
+            set -e
+            echo "[ERROR] Verilator 编译失败（rc=$rc），完整日志见 logs/frontend_03_verilator_build.log" >&2
+            exit 1
           fi
-          echo "=== verilator build output ==="
+
+          echo "=== Verilator 编译输出 ==="
           ls -l obj_dir_rtl/ | tee "$GITHUB_WORKSPACE/logs/frontend_03_obj_dir.txt"
+          test -x obj_dir_rtl/Vtb_croc_soc \
+            || { echo "[ERROR] 没有生成 obj_dir_rtl/Vtb_croc_soc" >&2; exit 1; }
+          echo "OK: 仿真程序 obj_dir_rtl/Vtb_croc_soc 已生成"
 
       - name: "6. FRONTEND: run helloworld simulation"
         shell: bash
