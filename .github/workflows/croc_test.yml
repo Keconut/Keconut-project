@@ -1,7 +1,7 @@
 name: Croc frontend + backend
 
 # 手动点运行：Actions 页面 -> 左侧 "Croc frontend + backend" -> Run workflow
-on:
+"on":
   workflow_dispatch:
   push:
     branches: [main, master]
@@ -153,7 +153,7 @@ jobs:
           ls -l croc/verilator/obj_dir_rtl/Vtb_croc_soc
           echo "[FRONTEND] PASSED"
 
-      - name: 8. BACKEND: confirm Yosys and the slang plugin are available
+      - name: "8. BACKEND: confirm Yosys and the slang plugin are available"
         shell: bash
         run: |
           set -euo pipefail
@@ -257,3 +257,4 @@ jobs:
           name: croc-evidence
           path: evidence/
           if-no-files-found: warn
+          retention-days: 30
