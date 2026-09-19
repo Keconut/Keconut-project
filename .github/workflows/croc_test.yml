@@ -305,39 +305,38 @@ jobs:
           test -s bin/helloworld.hex || { echo "[ERROR] 没有生成 bin/helloworld.hex" >&2; exit 1; }
           echo "OK: bin/helloworld.hex 已生成"
 
-      - name: "4.5. Patch ts_sram.sv so Verilator can compile it (BLKLOOPINIT)"
+      - name: "4.5. Locate the SRAM model Verilator complained about (diagnostic)"
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p logs
-          # Verilator 报 %Error-BLKLOOPINIT：
-          #   ts_sram.sv:152 Unsupported: Delayed assignment to array inside for loops
-          #          (non-delayed is ok - see docs)
-          # 注意它写的是 "Unsupported"，不是普通告警，所以 -Wno-BLKLOOPINIT 这类
-          # 开关关不掉它——Verilator 是真的不会为这种写法生成代码。
-          # Verilator 自己的提示就是出路：把延迟赋值 <= 换成非延迟赋值 =。
-          # 这里在 CI 里就地打这个补丁，并把 diff 打出来存证。
-          mapfile -t SRAM_FILES < <(find croc -name 'ts_sram.sv' -type f 2>/dev/null)
-          if [ "${#SRAM_FILES[@]}" -eq 0 ]; then
-            echo "[ERROR] 找不到 ts_sram.sv" >&2
-            exit 1
+          # 上一次这步报 "找不到 ts_sram.sv"，说明文件不在我猜的位置，
+          # 或者用的搜索方式有问题。这里只查不猜，把真实情况打出来。
+          OUT="$GITHUB_WORKSPACE/logs/frontend_02f_sram_locate.txt"
+          {
+            echo "########## pwd ##########"; pwd
+            echo "########## croc 顶层 ##########"; ls -1 croc 2>&1 | head -n 40
+            echo "########## find croc -name 'ts_sram.sv' ##########"
+            find croc -name 'ts_sram.sv' -type f 2>&1 || echo "(find 返回非零)"
+            echo "########## find croc -name '*sram*.sv' ##########"
+            find croc -name '*sram*.sv' -type f 2>&1 | head -n 40 || echo "(find 返回非零)"
+            echo "########## 含 'tech_cells_generic' 的路径 ##########"
+            find croc -path '*tech_cells_generic*' -type f 2>&1 | head -n 40 || echo "(find 返回非零)"
+            echo "########## 直接 grep 那个报错所在的赋值语句 ##########"
+            grep -rln 'ByteWidth+ByteWidth' croc 2>/dev/null | head -n 40 \
+              || echo "(没有文件包含 ByteWidth+ByteWidth)"
+            echo "########## 整个仓库里含 ts_sram 字样的文件 ##########"
+            grep -rln 'ts_sram' croc 2>/dev/null | head -n 40 \
+              || echo "(没有文件提到 ts_sram)"
+          } 2>&1 | tee "$OUT"
+
+          # 这步只做诊断，不因为找不到文件就失败，后面 Step 5 照常编译
+          if grep -q 'ts_sram.sv' "$OUT"; then
+            echo "OK: 找到了 ts_sram.sv，位置见上面日志"
+          else
+            echo "[WARN] 仓库里没有 ts_sram.sv 这个文件，细节见 $OUT"
+            echo "[WARN] 那 Verilator 报的 ts_sram.sv:152 就来自别处，先看上面的搜索结果"
           fi
-          for f in "${SRAM_FILES[@]}"; do
-            echo "[INFO] patch $f"
-            cp -f "$f" "$f.orig"
-            # 只改第 140-175 行区间，正好覆盖那个 for 循环里的写端口赋值
-            perl -i -pe 's/<=/=/g if $. >= 140 && $. <= 175' "$f"
-            echo "--- diff ---"
-            diff -u "$f.orig" "$f" | tee -a "$GITHUB_WORKSPACE/logs/frontend_02f_sram_patch.diff" || true
-          done
-          echo "=== 补丁后第 145-160 行 ==="
-          sed -n '145,160p' "${SRAM_FILES[0]}" | tee "$GITHUB_WORKSPACE/logs/frontend_02g_sram_patched.txt"
-          # 确认那个延迟赋值真的没了；如果还在，就让这一步直接失败，别把问题拖到 Verilator
-          if sed -n '140,175p' "${SRAM_FILES[0]}" | grep -q 'sram\[d\]\[i\].*<='; then
-            echo "[ERROR] 补丁没生效，仍然存在 <= 赋值，请检查 ts_sram.sv 的行号是否变了" >&2
-            exit 1
-          fi
-          echo "OK: ts_sram.sv 补丁完成"
 
       - name: "5. FRONTEND: Verilator build (this is the compile step)"
         shell: bash
@@ -345,30 +344,60 @@ jobs:
           set -euo pipefail
           cd croc/verilator
 
-          # 只用系统自带的 verilator（第 1 步 apt 装的那个）。
-          # 之前这里有个"失败就用 OSS CAD Suite verilator 重试"的兜底，
-          # 那个兜底设了 LD_LIBRARY_PATH=oss-cad-suite/lib，导致 verilator
-          # 加载到不配套的库，连 --version 都直接段错误，所以删掉了。
-          # OSS CAD Suite 只为后端的 slang 保留，前端不碰它。
-          #
-          # 关于 %Error-BLKLOOPINIT（ts_sram.sv 的延迟数组赋值）：
-          # 那个是 Verilator 的 Unsupported 错误，加任何 -Wno-* 都关不掉，
-          # 已经在第 4.5 步就地打补丁把它改成了非延迟赋值。
-          echo "=== verilator 信息 ==="
+          # 说明两件事：
+          # 1. run_verilator.sh 里没有任何 VERILATOR_FLAGS 变量，它只读 VERILATOR_JOBS，
+          #    verilator 的整条命令行是写死的，所以从外面塞 -Wno-* 是无效的。
+          # 2. %Error-BLKLOOPINIT 是 Verilator 的 Unsupported 错误，不是告警，
+          #    -Wno-BLKLOOPINIT 关不掉它。
+          #    所以这里的思路是"换一个更新的 verilator"，而不是"关掉这个检查"。
+          echo "=== 系统 verilator 信息 ==="
           which verilator
           verilator --version | tee "$GITHUB_WORKSPACE/logs/frontend_00_apt_verilator_version.txt"
           echo "[INFO] LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-<空>}"
 
-          echo "=== 开始 Verilator 编译 ==="
+          run_build() {
+            VERILATOR_JOBS=4 ./run_verilator.sh --build 2>&1
+          }
+
+          echo "=== 第一次尝试：系统自带 verilator ==="
           set +e
-          VERILATOR_JOBS=4 ./run_verilator.sh --build 2>&1 \
-            | tee "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log"
+          run_build | tee "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log"
           rc=${PIPESTATUS[0]}
           set -e
 
           if [ "$rc" -ne 0 ]; then
+            # 换 OSS CAD Suite 自带的 verilator 再试一次。
+            # 注意：绝对不能设 LD_LIBRARY_PATH=oss-cad-suite/lib，
+            # 上次就是那句让 verilator 加载到不配套的库，连 --version 都段错误。
+            # 这里只用它自己的启动脚本把 PATH 摆好，然后用绝对路径调用。
+            SUITE_VERILATOR="$GITHUB_WORKSPACE/oss-cad-suite/bin/verilator"
+            echo "=== 系统 verilator 失败（rc=$rc），尝试 OSS CAD Suite verilator ==="
+            echo "[INFO] 候选: $SUITE_VERILATOR"
+            if [ -f "$GITHUB_WORKSPACE/oss-cad-suite/environment" ]; then
+              # suite 自带的 environment 脚本会把 PATH/库路径按它自己的方式设好
+              set +u
+              source "$GITHUB_WORKSPACE/oss-cad-suite/environment" > /dev/null 2>&1 || true
+              set -u
+            fi
+            export PATH="$GITHUB_WORKSPACE/oss-cad-suite/bin:$PATH"
+            echo "[INFO] 现在 which verilator = $(command -v verilator)"
+            set +e
+            verilator --version 2>&1 | tee -a "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log"
+            echo "[INFO] verilator selftest rc=${PIPESTATUS[0]}"
+            set -e
+            if ! verilator --version > /dev/null 2>&1; then
+              echo "[ERROR] OSS CAD Suite 的 verilator 自己就跑不起来，放弃这条路" >&2
+            else
+              set +e
+              run_build | tee -a "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log"
+              rc=${PIPESTATUS[0]}
+              set -e
+            fi
+          fi
+
+          if [ "$rc" -ne 0 ]; then
             # verilator 的报错细节默认不刷屏，只给一个 "Exiting due to N error(s)" 摘要。
-            # 上次抓取时被大量 UNOPTFLAT 警告淹没，所以这次先只抓 Error，
+            # 上次抓取时被大量 UNOPTFLAT 警告淹没，所以这次只抓 Error，
             # 并把 Error 那一行连同它后面 8 行（真正的说明文字）一起打出来。
             echo "=== 用 --error-limit 重新跑一次，让 verilator 把报错细节打出来 ==="
             set +e
@@ -382,12 +411,6 @@ jobs:
               grep -n -A 8 '%Error' "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log" || true
               echo "########## 报错总行数 ##########"
               grep -c '%Error' "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log" || true
-              echo "########## 第一处 Error 之前的 6 行（原始上下文） ##########"
-              ln="$(grep -n '%Error' "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log" | head -n 1 | cut -d: -f1 || true)"
-              if [ -n "$ln" ]; then
-                start=$(( ln > 6 ? ln - 6 : 1 ))
-                sed -n "${start},$(( ln + 8 ))p" "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log"
-              fi
             } 2>&1 | tee "$GITHUB_WORKSPACE/logs/frontend_03_verilator_errors.txt"
             echo "[ERROR] Verilator 编译失败（rc=$rc），完整日志见 logs/frontend_03_verilator_build.log" >&2
             exit 1
