@@ -305,6 +305,40 @@ jobs:
           test -s bin/helloworld.hex || { echo "[ERROR] 没有生成 bin/helloworld.hex" >&2; exit 1; }
           echo "OK: bin/helloworld.hex 已生成"
 
+      - name: "4.5. Patch ts_sram.sv so Verilator can compile it (BLKLOOPINIT)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p logs
+          # Verilator 报 %Error-BLKLOOPINIT：
+          #   ts_sram.sv:152 Unsupported: Delayed assignment to array inside for loops
+          #          (non-delayed is ok - see docs)
+          # 注意它写的是 "Unsupported"，不是普通告警，所以 -Wno-BLKLOOPINIT 这类
+          # 开关关不掉它——Verilator 是真的不会为这种写法生成代码。
+          # Verilator 自己的提示就是出路：把延迟赋值 <= 换成非延迟赋值 =。
+          # 这里在 CI 里就地打这个补丁，并把 diff 打出来存证。
+          mapfile -t SRAM_FILES < <(find croc -name 'ts_sram.sv' -type f 2>/dev/null)
+          if [ "${#SRAM_FILES[@]}" -eq 0 ]; then
+            echo "[ERROR] 找不到 ts_sram.sv" >&2
+            exit 1
+          fi
+          for f in "${SRAM_FILES[@]}"; do
+            echo "[INFO] patch $f"
+            cp -f "$f" "$f.orig"
+            # 只改第 140-175 行区间，正好覆盖那个 for 循环里的写端口赋值
+            perl -i -pe 's/<=/=/g if $. >= 140 && $. <= 175' "$f"
+            echo "--- diff ---"
+            diff -u "$f.orig" "$f" | tee -a "$GITHUB_WORKSPACE/logs/frontend_02f_sram_patch.diff" || true
+          done
+          echo "=== 补丁后第 145-160 行 ==="
+          sed -n '145,160p' "${SRAM_FILES[0]}" | tee "$GITHUB_WORKSPACE/logs/frontend_02g_sram_patched.txt"
+          # 确认那个延迟赋值真的没了；如果还在，就让这一步直接失败，别把问题拖到 Verilator
+          if sed -n '140,175p' "${SRAM_FILES[0]}" | grep -q 'sram\[d\]\[i\].*<='; then
+            echo "[ERROR] 补丁没生效，仍然存在 <= 赋值，请检查 ts_sram.sv 的行号是否变了" >&2
+            exit 1
+          fi
+          echo "OK: ts_sram.sv 补丁完成"
+
       - name: "5. FRONTEND: Verilator build (this is the compile step)"
         shell: bash
         run: |
@@ -316,6 +350,10 @@ jobs:
           # 那个兜底设了 LD_LIBRARY_PATH=oss-cad-suite/lib，导致 verilator
           # 加载到不配套的库，连 --version 都直接段错误，所以删掉了。
           # OSS CAD Suite 只为后端的 slang 保留，前端不碰它。
+          #
+          # 关于 %Error-BLKLOOPINIT（ts_sram.sv 的延迟数组赋值）：
+          # 那个是 Verilator 的 Unsupported 错误，加任何 -Wno-* 都关不掉，
+          # 已经在第 4.5 步就地打补丁把它改成了非延迟赋值。
           echo "=== verilator 信息 ==="
           which verilator
           verilator --version | tee "$GITHUB_WORKSPACE/logs/frontend_00_apt_verilator_version.txt"
