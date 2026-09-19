@@ -305,14 +305,13 @@ jobs:
           test -s bin/helloworld.hex || { echo "[ERROR] 没有生成 bin/helloworld.hex" >&2; exit 1; }
           echo "OK: bin/helloworld.hex 已生成"
 
-      - name: "4.5. Locate the SRAM model Verilator complained about (diagnostic)"
+      - name: "4.5. Locate and patch the SRAM model, and inspect the hex file"
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p logs
-          # 上一次这步报 "找不到 ts_sram.sv"，说明文件不在我猜的位置，
-          # 或者用的搜索方式有问题。这里只查不猜，把真实情况打出来。
-          OUT="$GITHUB_WORKSPACE/logs/frontend_02f_sram_locate.txt"
+          D="$GITHUB_WORKSPACE/logs"
+
           {
             echo "########## pwd ##########"; pwd
             echo "########## croc 顶层 ##########"; ls -1 croc 2>&1 | head -n 40
@@ -320,23 +319,44 @@ jobs:
             find croc -name 'ts_sram.sv' -type f 2>&1 || echo "(find 返回非零)"
             echo "########## find croc -name '*sram*.sv' ##########"
             find croc -name '*sram*.sv' -type f 2>&1 | head -n 40 || echo "(find 返回非零)"
-            echo "########## 含 'tech_cells_generic' 的路径 ##########"
-            find croc -path '*tech_cells_generic*' -type f 2>&1 | head -n 40 || echo "(find 返回非零)"
-            echo "########## 直接 grep 那个报错所在的赋值语句 ##########"
-            grep -rln 'ByteWidth+ByteWidth' croc 2>/dev/null | head -n 40 \
+            echo "########## find croc -path '*tech_cells_generic*' ##########"
+            find croc -path '*tech_cells_generic*' -type f 2>&1 | head -n 60 || echo "(find 返回非零)"
+            echo "########## 按代码内容反查 ByteWidth+ByteWidth ##########"
+            grep -rln 'ByteWidth+ByteWidth' croc 2>/dev/null | head -n 20 \
               || echo "(没有文件包含 ByteWidth+ByteWidth)"
-            echo "########## 整个仓库里含 ts_sram 字样的文件 ##########"
-            grep -rln 'ts_sram' croc 2>/dev/null | head -n 40 \
+            echo "########## 提到 ts_sram 的文件 ##########"
+            grep -rln 'ts_sram' croc 2>/dev/null | head -n 20 \
               || echo "(没有文件提到 ts_sram)"
-          } 2>&1 | tee "$OUT"
+          } 2>&1 | tee "$D/frontend_02f_sram_locate.txt"
 
-          # 这步只做诊断，不因为找不到文件就失败，后面 Step 5 照常编译
-          if grep -q 'ts_sram.sv' "$OUT"; then
-            echo "OK: 找到了 ts_sram.sv，位置见上面日志"
+          # 找到就顺手打补丁：把那句 Verilator 不支持的延迟数组赋值改成非延迟赋值。
+          # 找不到也不失败，留给 Step 5 的 verilator 兜底处理。
+          mapfile -t SRAM_FILES < <(find croc -name 'ts_sram.sv' -type f 2>/dev/null || true)
+          if [ "${#SRAM_FILES[@]}" -eq 0 ]; then
+            echo "[WARN] 仓库里没有 ts_sram.sv，跳过补丁"
           else
-            echo "[WARN] 仓库里没有 ts_sram.sv 这个文件，细节见 $OUT"
-            echo "[WARN] 那 Verilator 报的 ts_sram.sv:152 就来自别处，先看上面的搜索结果"
+            for f in "${SRAM_FILES[@]}"; do
+              if grep -q 'sram\[d\]\[i\].*<=' "$f"; then
+                echo "[INFO] 给 $f 打补丁（把延迟数组赋值 <= 改成 =）"
+                cp -f "$f" "$f.orig"
+                perl -i -pe 's/<=/=/g if /sram\[d\]\[i\]/' "$f"
+                diff -u "$f.orig" "$f" | tee -a "$D/frontend_02h_sram_patch.diff" || true
+              else
+                echo "[INFO] $f 里没有 sram[d][i] <= 这种写法，无需补丁"
+              fi
+            done
           fi
+
+          echo "########## 检查 helloworld.hex 的内容 ##########"
+          {
+            ls -l croc/sw/bin/ 2>&1 || true
+            echo "--- 前 5 行 ---"
+            head -n 5 croc/sw/bin/helloworld.hex 2>&1 || echo "(读不到 hex)"
+            echo "--- 行数 ---"
+            wc -l croc/sw/bin/helloworld.hex 2>&1 || true
+            echo "--- 第一个 @ 地址 ---"
+            grep -m 1 '^@' croc/sw/bin/helloworld.hex 2>&1 || echo "(hex 里没有 @ 地址行)"
+          } 2>&1 | tee "$D/frontend_02i_hexfile.txt"
 
       - name: "5. FRONTEND: Verilator build (this is the compile step)"
         shell: bash
@@ -427,7 +447,29 @@ jobs:
         run: |
           set -euo pipefail
           cd croc/verilator
-          ./run_verilator.sh --run ../sw/bin/helloworld.hex 2>&1 | tee "$GITHUB_WORKSPACE/logs/frontend_04_helloworld_run.log"
+          D="$GITHUB_WORKSPACE/logs"
+          LOG="$D/frontend_04_helloworld_run.log"
+
+          # 仿真可能是死循环刷屏，输出量会非常大（几十万行）。
+          # 用 timeout 兜住，最多跑 10 分钟，避免把 runner 拖到超时。
+          set +e
+          timeout 600 ./run_verilator.sh --run ../sw/bin/helloworld.hex 2>&1 | tee "$LOG"
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "[INFO] 仿真退出码 rc=$rc（124 表示被 timeout 掐断）"
+          echo "[INFO] 日志总行数: $(wc -l < "$LOG")"
+
+          # 只留下关键几类行，方便一眼看出加载和启动到哪一步
+          {
+            echo "########## 关键事件行 ##########"
+            grep -nE 'Running program|Loading binary|Writing to memory|Initialization success|Waking core|Halting|Halted|Resumed|Wait for end of code|Simulation finished|Hello World|ClkFrequency|UartRealBaudRate' "$LOG" || true
+            echo "########## Illegal instruction 出现次数 ##########"
+            grep -c 'Illegal instruction' "$LOG" || true
+            echo "########## 头 60 行（初始化阶段） ##########"
+            head -n 60 "$LOG"
+            echo "########## 尾 40 行 ##########"
+            tail -n 40 "$LOG"
+          } 2>&1 | tee "$D/frontend_04b_run_summary.txt"
 
       - name: 7. Verify frontend really succeeded
         shell: bash
