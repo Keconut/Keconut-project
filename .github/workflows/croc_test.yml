@@ -329,18 +329,28 @@ jobs:
           set -e
 
           if [ "$rc" -ne 0 ]; then
-            # verilator 自己的报错细节默认不刷屏，只给一个 "Exiting due to N error(s)" 摘要。
-            # 把真正的报错行抓出来打印，否则每次只能看到一个没有上下文的摘要。
+            # verilator 的报错细节默认不刷屏，只给一个 "Exiting due to N error(s)" 摘要。
+            # 上次抓取时被大量 UNOPTFLAT 警告淹没，所以这次先只抓 Error，
+            # 并把 Error 那一行连同它后面 8 行（真正的说明文字）一起打出来。
             echo "=== 用 --error-limit 重新跑一次，让 verilator 把报错细节打出来 ==="
             set +e
             verilator -Wno-fatal -Wno-style -Wno-BLKANDNBLK -Wno-WIDTHEXPAND \
               -Wno-WIDTHTRUNC -Wno-WIDTHCONCAT -Wno-ASCRANGE \
               --timing --error-limit 50 --top tb_croc_soc \
               --lint-only -f croc_rtl.f 2>&1 | tee -a "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log"
-            echo "=== 报错行摘要 ==="
-            grep -nE '%Error|%Warning' "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log" \
-              | head -n 40 | tee -a "$GITHUB_WORKSPACE/logs/frontend_03_verilator_errors.txt" || true
             set -e
+            {
+              echo "########## Error 行 + 紧接的 8 行（窗口调窄，避免网页截断） ##########"
+              grep -n -A 8 '%Error' "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log" || true
+              echo "########## 报错总行数 ##########"
+              grep -c '%Error' "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log" || true
+              echo "########## 第一处 Error 之前的 6 行（原始上下文） ##########"
+              ln="$(grep -n '%Error' "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log" | head -n 1 | cut -d: -f1 || true)"
+              if [ -n "$ln" ]; then
+                start=$(( ln > 6 ? ln - 6 : 1 ))
+                sed -n "${start},$(( ln + 8 ))p" "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log"
+              fi
+            } 2>&1 | tee "$GITHUB_WORKSPACE/logs/frontend_03_verilator_errors.txt"
             echo "[ERROR] Verilator 编译失败（rc=$rc），完整日志见 logs/frontend_03_verilator_build.log" >&2
             exit 1
           fi
