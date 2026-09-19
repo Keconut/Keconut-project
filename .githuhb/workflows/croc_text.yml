@@ -1,0 +1,259 @@
+name: Croc frontend + backend
+
+# 手动点运行：Actions 页面 -> 左侧 "Croc frontend + backend" -> Run workflow
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - '.github/workflows/croc_test.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  croc:
+    name: Verilator helloworld + Yosys synthesis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    env:
+      # 固定上游仓库，避免跟着 main 漂移
+      CROC_REPO: https://github.com/pulp-platform/croc.git
+      CROC_REF: main
+      # Bender 版本（croc 要求 >= 0.28.2，这里固定 0.32.1）
+      BENDER_VERSION: v0.32.1
+
+    steps:
+      - name: 0. Checkout this repository
+        uses: actions/checkout@v4
+
+      - name: 1. Install system packages
+        shell: bash
+        run: |
+          set -x
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git ca-certificates curl wget xz-utils \
+            verilator \
+            gcc-riscv64-unknown-elf \
+            make gawk \
+            imagemagick fonts-dejavu-core
+          mkdir -p logs
+          echo "=== installed versions ==="
+          { verilator --version
+            riscv64-unknown-elf-gcc --version | head -n 1
+            make --version | head -n 1
+            convert --version | head -n 3
+          } 2>&1 | tee logs/backend_00_tool_versions.txt
+
+      - name: 2. Clone croc and install Bender
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "$CROC_REF" "$CROC_REPO" croc
+          cd croc
+          echo "[INFO] croc commit: $(git rev-parse HEAD)"
+          git rev-parse HEAD > ../logs/croc_commit.txt
+          # Bender 从官方 release 拿 x86_64 Linux 预编译二进制
+          curl -fsSL -o /tmp/bender.tar.xz \
+            "https://github.com/pulp-platform/bender/releases/download/${BENDER_VERSION}/bender-x86_64-unknown-linux-gnu.tar.xz"
+          mkdir -p "$HOME/.local/bin"
+          tar -xJf /tmp/bender.tar.xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/bender" --version
+
+      - name: 3. Build the RTL file list with Bender
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd croc/verilator
+          ./run_verilator.sh --flist-rtl 2>&1 | tee "$GITHUB_WORKSPACE/logs/frontend_01_flist.log"
+          echo "=== head of generated croc_rtl.f ==="
+          head -n 10 croc_rtl.f | tee "$GITHUB_WORKSPACE/logs/frontend_01_flist_head.txt"
+
+      - name: "3.5. Download OSS CAD Suite (Yosys + slang plugin, and a Verilator fallback)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          # croc 的 yosys 脚本需要 'yosys plugin -i slang.so'，Ubuntu 自带的 yosys 没有 slang。
+          # OSS CAD Suite 自带 yosys + slang.so + abc，所以后端用它。
+          # 它同时带来一个较新的 verilator，万一 apt 那个太旧就跑不动。
+          URL="$(curl -fsSL https://api.github.com/repos/YosysHQ/oss-cad-suite-build/releases/latest \
+            | grep -o 'https://[^"]*oss-cad-suite-linux-x64-[0-9]*\.tgz' | head -n 1)"
+          if [ -z "$URL" ]; then
+            echo "[ERROR] could not resolve OSS CAD Suite asset URL" >&2
+            exit 1
+          fi
+          echo "[INFO] OSS CAD Suite URL: $URL"
+          echo "$URL" > "$GITHUB_WORKSPACE/logs/backend_00_oss_cad_suite_url.txt"
+          curl -fL --retry 3 -o /tmp/oss-cad-suite.tgz "$URL"
+          tar -xzf /tmp/oss-cad-suite.tgz -C "$GITHUB_WORKSPACE"
+          rm -f /tmp/oss-cad-suite.tgz
+          "$GITHUB_WORKSPACE/oss-cad-suite/bin/yosys" -V | tee logs/backend_00_yosys_version.txt
+          "$GITHUB_WORKSPACE/oss-cad-suite/bin/verilator" --version | tee logs/frontend_00_suite_verilator_version.txt
+
+      - name: "4. FRONTEND: cross-compile helloworld (riscv64-unknown-elf-gcc)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd croc/sw
+          make all 2>&1 | tee "$GITHUB_WORKSPACE/logs/frontend_02_sw_build.log"
+          echo "=== generated software artifacts ==="
+          ls -l bin/ | tee "$GITHUB_WORKSPACE/logs/frontend_02_sw_bin.txt"
+
+      - name: "5. FRONTEND: Verilator build (this is the compile step)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd croc/verilator
+          # --build / --timing 需要 Verilator >= 5.006。
+          # apt 装的那个要是太旧，就自动换成 OSS CAD Suite 里的 verilator 再来一次。
+          set +e
+          VERILATOR_JOBS=4 ./run_verilator.sh --build 2>&1 \
+            | tee "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "[WARN] default verilator failed (rc=$rc), retrying with OSS CAD Suite verilator"
+            export PATH="$GITHUB_WORKSPACE/oss-cad-suite/bin:$PATH"
+            export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/oss-cad-suite/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            verilator --version
+            VERILATOR_JOBS=4 ./run_verilator.sh --build 2>&1 \
+              | tee -a "$GITHUB_WORKSPACE/logs/frontend_03_verilator_build.log"
+          else
+            verilator --version | tee "$GITHUB_WORKSPACE/logs/frontend_00_apt_verilator_version.txt"
+          fi
+          echo "=== verilator build output ==="
+          ls -l obj_dir_rtl/ | tee "$GITHUB_WORKSPACE/logs/frontend_03_obj_dir.txt"
+
+      - name: "6. FRONTEND: run helloworld simulation"
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd croc/verilator
+          ./run_verilator.sh --run ../sw/bin/helloworld.hex 2>&1 | tee "$GITHUB_WORKSPACE/logs/frontend_04_helloworld_run.log"
+
+      - name: 7. Verify frontend really succeeded
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG=logs/frontend_04_helloworld_run.log
+          echo "=== looking for hard evidence in $LOG ==="
+          grep -n "Running program" "$LOG" || true
+          grep -n "Hello World from Croc!" "$LOG" || true
+          grep -n "Simulation finished: SUCCESS" "$LOG" || true
+          echo "=== assertions ==="
+          grep -q "Hello World from Croc!" "$LOG"
+          echo "OK: UART printed the hello world line"
+          grep -q "Simulation finished: SUCCESS" "$LOG"
+          echo "OK: simulation reported SUCCESS"
+          test -x croc/verilator/obj_dir_rtl/Vtb_croc_soc
+          echo "OK: simulation binary exists"
+          ls -l croc/verilator/obj_dir_rtl/Vtb_croc_soc
+          echo "[FRONTEND] PASSED"
+
+      - name: 8. BACKEND: confirm Yosys and the slang plugin are available
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$GITHUB_WORKSPACE/oss-cad-suite/bin:$PATH"
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/oss-cad-suite/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          yosys -V
+          # croc 的 yosys_synthesis.tcl 里有 'yosys plugin -i slang.so'，缺了它一定失败
+          test -f "$GITHUB_WORKSPACE/oss-cad-suite/lib/slang.so" \
+            || test -f "$GITHUB_WORKSPACE/oss-cad-suite/share/yosys/slang.so" \
+            || { echo "[ERROR] slang.so not found in OSS CAD Suite" >&2; find "$GITHUB_WORKSPACE/oss-cad-suite" -name 'slang.so' -print; exit 1; }
+          echo "OK: slang.so present"
+          find "$GITHUB_WORKSPACE/oss-cad-suite" -name 'slang.so' -print | tee logs/backend_00_slang_path.txt
+
+      - name: "9. BACKEND: Yosys synthesis (RTL -> gate-level netlist)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 这里把 OSS CAD Suite 放到 PATH 前面，让它的 yosys 生效
+          export PATH="$GITHUB_WORKSPACE/oss-cad-suite/bin:$PATH"
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/oss-cad-suite/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          yosys -V
+          cd croc/yosys
+          ./run_synthesis.sh --synth 2>&1 | tee "$GITHUB_WORKSPACE/logs/backend_01_yosys_synthesis.log"
+          # 把 croc 自己产生的日志一起收走
+          cp -v croc.log "$GITHUB_WORKSPACE/logs/backend_02_croc_yosys_internal.log"
+          mkdir -p "$GITHUB_WORKSPACE/logs/yosys_reports"
+          cp -v reports/*.rpt "$GITHUB_WORKSPACE/logs/yosys_reports/"
+          ls -l out/ | tee "$GITHUB_WORKSPACE/logs/backend_03_yosys_out.txt"
+
+      - name: 10. Verify backend really succeeded
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s croc/yosys/out/netlist_debug.v
+          echo "OK: croc/yosys/out/netlist_debug.v exists"
+          test -s croc/yosys/out/croc_yosys.v
+          echo "OK: croc/yosys/out/croc_yosys.v exists"
+          echo "=== netlist head ==="
+          head -n 5 croc/yosys/out/croc_yosys.v | tee logs/backend_04_netlist_head.txt
+          echo "=== area report (tail) ==="
+          ls logs/yosys_reports/
+          tail -n 40 logs/yosys_reports/croc_area.rpt | tee logs/backend_05_area_report_tail.txt
+          echo "[BACKEND] PASSED"
+
+      - name: 11. Make PNG proof images from the terminal logs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p logs
+          # fonts-dejavu-core 装好后用完整字体路径，比字体名更不容易出错
+          MONO_TTF="$(find /usr/share/fonts -name 'DejaVuSansMono.ttf' | head -n 1)"
+          echo "[INFO] mono font: ${MONO_TTF:-<none, falling back to default>}"
+          fixup() { sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' -e 's/\r$//' "$1" | cut -c1-170; }
+          render() {
+            local src="$1" out="$2" title="$3"
+            if [ -n "$MONO_TTF" ]; then
+              fixup "$src" | tail -n 38 | convert \
+                -background '#101418' -fill '#e6e6e6' \
+                -font "$MONO_TTF" -pointsize 15 \
+                -bordercolor '#101418' -border 18 \
+                label:"$ $title\n$(cat)" "$out"
+            else
+              fixup "$src" | tail -n 38 | convert \
+                -background '#101418' -fill '#e6e6e6' \
+                -pointsize 15 -bordercolor '#101418' -border 18 \
+                label:"$ $title\n$(cat)" "$out"
+            fi
+            echo "[OK] wrote $out"
+          }
+          render logs/frontend_03_verilator_build.log logs/01_frontend_verilator_compile.png \
+            "cd croc/verilator && ./run_verilator.sh --build"
+          render logs/frontend_04_helloworld_run.log logs/02_frontend_helloworld_run.png \
+            "cd croc/verilator && ./run_verilator.sh --run ../sw/bin/helloworld.hex"
+          render logs/backend_01_yosys_synthesis.log logs/03_backend_yosys_synthesis.png \
+            "cd croc/yosys && ./run_synthesis.sh --synth"
+          ls -l logs/*.png
+
+      - name: 12. Pack evidence bundle (logs + reports + proof images)
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p evidence
+          cp -v logs/*.png evidence/ 2>/dev/null || true
+          cp -v logs/*.log  evidence/ 2>/dev/null || true
+          cp -v logs/*.txt  evidence/ 2>/dev/null || true
+          cp -rv logs/yosys_reports evidence/ 2>/dev/null || true
+          cat > evidence/README_EVIDENCE.txt <<'EOF'
+          Evidence bundle produced by GitHub Actions.
+            01_frontend_verilator_compile.png ... frontend compile proof
+            02_frontend_helloworld_run.png ...... frontend run proof (Hello World from Croc!)
+            03_backend_yosys_synthesis.png ...... backend synthesis proof
+            frontend_*.log / backend_*.log ...... full terminal stdout of each step
+            yosys_reports/ ..................... area / register / instance reports
+          EOF
+          du -sh evidence
+
+      - name: 13. Upload logs and images as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: croc-evidence
+          path: evidence/
+          if-no-files-found: warn
