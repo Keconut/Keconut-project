@@ -1,0 +1,24 @@
+make: Entering directory '/workspace/scratch/329f5032e70a/croc-upstream/sw'
+mkdir -p build/
+riscv64-unknown-elf-gcc -march=rv32i_zicsr -mabi=ilp32 -mcmodel=medany -static -std=gnu99 -Os -nostdlib -fno-builtin -ffreestanding -Iinclude -Ilib/inc -I/workspace/scratch/329f5032e70a/croc-upstream/sw -MMD -MP -c helloworld.c -o build/helloworld.o
+mkdir -p build/
+riscv64-unknown-elf-gcc -march=rv32i_zicsr -mabi=ilp32 -mcmodel=medany -static -std=gnu99 -Os -nostdlib -fno-builtin -ffreestanding -Iinclude -Ilib/inc -I/workspace/scratch/329f5032e70a/croc-upstream/sw -MMD -MP -c crt0.S -o build/crt0.o
+mkdir -p build/lib/src/
+riscv64-unknown-elf-gcc -march=rv32i_zicsr -mabi=ilp32 -mcmodel=medany -static -std=gnu99 -Os -nostdlib -fno-builtin -ffreestanding -Iinclude -Ilib/inc -I/workspace/scratch/329f5032e70a/croc-upstream/sw -MMD -MP -c lib/src/clint.c -o build/lib/src/clint.o
+mkdir -p build/lib/src/
+riscv64-unknown-elf-gcc -march=rv32i_zicsr -mabi=ilp32 -mcmodel=medany -static -std=gnu99 -Os -nostdlib -fno-builtin -ffreestanding -Iinclude -Ilib/inc -I/workspace/scratch/329f5032e70a/croc-upstream/sw -MMD -MP -c lib/src/gpio.c -o build/lib/src/gpio.o
+mkdir -p build/lib/src/
+riscv64-unknown-elf-gcc -march=rv32i_zicsr -mabi=ilp32 -mcmodel=medany -static -std=gnu99 -Os -nostdlib -fno-builtin -ffreestanding -Iinclude -Ilib/inc -I/workspace/scratch/329f5032e70a/croc-upstream/sw -MMD -MP -c lib/src/idma.c -o build/lib/src/idma.o
+mkdir -p build/lib/src/
+riscv64-unknown-elf-gcc -march=rv32i_zicsr -mabi=ilp32 -mcmodel=medany -static -std=gnu99 -Os -nostdlib -fno-builtin -ffreestanding -Iinclude -Ilib/inc -I/workspace/scratch/329f5032e70a/croc-upstream/sw -MMD -MP -c lib/src/obi_timer.c -o build/lib/src/obi_timer.o
+mkdir -p build/lib/src/
+riscv64-unknown-elf-gcc -march=rv32i_zicsr -mabi=ilp32 -mcmodel=medany -static -std=gnu99 -Os -nostdlib -fno-builtin -ffreestanding -Iinclude -Ilib/inc -I/workspace/scratch/329f5032e70a/croc-upstream/sw -MMD -MP -c lib/src/print.c -o build/lib/src/print.o
+mkdir -p build/lib/src/
+riscv64-unknown-elf-gcc -march=rv32i_zicsr -mabi=ilp32 -mcmodel=medany -static -std=gnu99 -Os -nostdlib -fno-builtin -ffreestanding -Iinclude -Ilib/inc -I/workspace/scratch/329f5032e70a/croc-upstream/sw -MMD -MP -c lib/src/uart.c -o build/lib/src/uart.o
+mkdir -p bin/
+riscv64-unknown-elf-gcc -o bin/helloworld.elf build/helloworld.o build/crt0.o build/lib/src/clint.o build/lib/src/gpio.o build/lib/src/idma.o build/lib/src/obi_timer.o build/lib/src/print.o build/lib/src/uart.o -static -nostartfiles -lgcc -march=rv32i_zicsr -mabi=ilp32 -mcmodel=medany -static -std=gnu99 -Os -nostdlib -fno-builtin -ffreestanding -Tlink.ld
+mkdir -p bin/
+riscv64-unknown-elf-objcopy -O verilog bin/helloworld.elf bin/helloworld.hex
+mkdir -p bin/
+riscv64-unknown-elf-objdump -D -s bin/helloworld.elf >bin/helloworld.dump
+make: Leaving directory '/workspace/scratch/329f5032e70a/croc-upstream/sw'

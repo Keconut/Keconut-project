@@ -1,0 +1,5 @@
+1000000c <_start>:
+1000000c:	6d818113          	addi	sp,gp,1752 # 10001000 <__stack_pointer$>
+10000010:	00001197          	auipc	gp,0x1
+10000014:	91818193          	addi	gp,gp,-1768 # 10000928 <__global_pointer$>
+10000018:	0bd0006f          	j	100008d4 <main>

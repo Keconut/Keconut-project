@@ -1,0 +1,24 @@
+diff --git a/yosys/scripts/yosys_synthesis.tcl b/yosys/scripts/yosys_synthesis.tcl
+index 0955bb2..ecef9b0 100644
+--- a/yosys/scripts/yosys_synthesis.tcl
++++ b/yosys/scripts/yosys_synthesis.tcl
+@@ -25,8 +25,8 @@ yosys plugin -i slang.so
+ # default from yosys_common.tcl: top_design=croc_chip; sv_flist=./croc.flist
+ yosys read_slang --top $top_design -f $sv_flist \
+         --cmd-rename +define,+define \
+-        --compat-mode --keep-hierarchy \
+-        --allow-use-before-declare --ignore-unknown-modules
++        --keep-hierarchy \
++        --allow-use-before-declare
+ 
+ # preserve hierarchy of selected modules/instances
+ # 't' means type as in select all instances of this type/module
+@@ -146,7 +146,7 @@ set period_ps 10000
+ # pre-process abc file (written to tmp directory)
+ set abc_comb_script   [processAbcScript scripts/abc-opt.script]
+ # call ABC
+-yosys abc {*}$tech_cells_args -D $period_ps -script $abc_comb_script -constr src/abc.constr {*}$dont_use_args -showtmp
++yosys abc -exe yosys-abc {*}$tech_cells_args -D $period_ps -script $abc_comb_script -constr src/abc.constr {*}$dont_use_args -showtmp
+ 
+ yosys clean -purge
+ 

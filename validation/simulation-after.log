@@ -1,0 +1,35 @@
+[INFO][ENV] Croc root: /workspace/scratch/329f5032e70a/croc-upstream
+[INFO][ENV] PDK root: /workspace/scratch/329f5032e70a/croc-upstream/technology
+[INFO][ENV] Croc PDK: sg13cmos5l
+[INFO][ENV] Active technology view: public mirror
+[INFO][ENV] KLayout path: /workspace/scratch/329f5032e70a/croc-upstream/ihp13/sg13cmos5l/libs.tech/klayout
+[INFO][ENV] Bender PDK args: -D IHP_SG13CMOS5L=1
+[INFO][ENV] Tech LEF: sg13cmos5l_tech.lef
+[INFO][ENV] IO LEF/GDS: sg13cmos5l_io.lef/sg13cmos5l_io.gds
+[INFO][ENV] IO Liberty tt/ff: sg13cmos5l_io_typ_1p2V_3p3V_25C.lib/sg13cmos5l_io_fast_1p32V_3p6V_m40C.lib
+[INFO][ENV] Bondpad LEF/GDS: bondpad5l_70x70.lef/bondpad5l_70x70.gds
+[INFO][Verilator] Run RTL simulation
+Running program: ../sw/bin/helloworld.hex
+ClkFrequency:         20MHz
+UartRealBaudRate:     125000
+@     42050ns | [JTAG] Initialization success
+@     42050ns | [JTAG] Writing 0x12345678 to 0x10000000
+@     94600ns | [JTAG] Read 0x12345678 from 0x10000000
+@     94600ns | [JTAG] Read back correct data
+@     94600ns | [JTAG] Loading binary from ../sw/bin/helloworld.hex
+@     96900ns | [JTAG] Writing to memory @10000000 
+@    106100ns | [JTAG] Writing to memory @1000000c 
+@    119900ns | [JTAG] Writing to memory @10000020 
+@   1456200ns | [CORE] Waking core via CLINT msip
+@   1456200ns | [JTAG] Writing 0x00000001 to 0x02040000
+@   1479250ns | [JTAG] Halting hart 0... 
+@   1492600ns | [JTAG] Halted
+@   1494900ns | [JTAG] Resumed hart 0 
+@   1494900ns | [CORE] Wait for end of code...
+@   3517050ns | [UART] Hello World from Croc!
+@   3517050ns | [UART] raw: '{'h48, 'h65, 'h6c, 'h6c, 'h6f, 'h20, 'h57, 'h6f, 'h72, 'h6c, 'h64, 'h20, 'h66, 'h72, 'h6f, 'h6d, 'h20, 'h43, 'h72, 'h6f, 'h63, 'h21, 'ha}
+@   3544150ns | [JTAG] Simulation finished: SUCCESS
+- ../rtl/test/croc_vip.sv:278: Verilog $finish
+- S i m u l a t i o n   R e p o r t: Verilator 5.053 devel
+- Verilator: $finish at 4ms; walltime 1.749 s; speed 2.027 ms/s
+- Verilator: cpu 1.748 s on 1 threads; allocated 153 MB

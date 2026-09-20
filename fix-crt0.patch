@@ -1,0 +1,16 @@
+diff --git a/sw/crt0.S b/sw/crt0.S
+index 829468f..b3a8f02 100644
+--- a/sw/crt0.S
++++ b/sw/crt0.S
+@@ -33,9 +33,10 @@
+ .globl _start
+ .section .text._start
+ _start:
+-  la      sp, __stack_pointer$
+   .option push
+   .option norelax
++  # GP is not initialized yet: neither address load may be GP-relative.
++  la      sp, __stack_pointer$
+   la      gp, __global_pointer$
+   .option pop
+   tail    main

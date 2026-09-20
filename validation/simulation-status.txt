@@ -1,0 +1,2 @@
+before_exit_status=124
+after_exit_status=0

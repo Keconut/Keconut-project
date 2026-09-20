@@ -1,0 +1,35 @@
+{
+  "date": "2026-09-20",
+  "upstream_commit": "b301ef4439ab9b55322d2ac31d672fdcc67bc0c6",
+  "original_actions_run": "https://github.com/Keconut/Keconut-project/actions/runs/35450994899/job/105917998062",
+  "yaml_and_bash_syntax": "PASS",
+  "delivered_patches_match_tested_sources": "PASS",
+  "before": {
+    "exit_status": 124,
+    "timeout_seconds": 8,
+    "illegal_instruction_count": 2319,
+    "startup_sp": "0x000006D8"
+  },
+  "after": {
+    "exit_status": 0,
+    "uart_hello_world": true,
+    "jtag_success": true,
+    "illegal_instruction_count": 0,
+    "startup_sp": "0x10001000",
+    "walltime_seconds": 1.749
+  },
+  "yosys": {
+    "exit_status": 0,
+    "check_report_problems": 0,
+    "netlist_bytes": 4222945,
+    "debug_netlist_bytes": 7016216
+  },
+  "scope": "Local RTL simulation and Yosys synthesis; the replacement workflow has not been executed remotely on GitHub Actions.",
+  "local_environment_adaptations": "Tool packages extracted into the workspace; local gawk runtime wrapper, CPATH/LIBRARY_PATH for lz4 development files, and a writable TMPDIR. GitHub workflow installs corresponding packages normally.",
+  "download_sha256": {
+    "oss-cad-suite.tgz": "c49c2528d0d8184b9afc3d983d8f322a2be8b9fe0069763a746c3065e42d360f",
+    "bender.tar.xz": "59a36723b056a06b266dc68d4ceedcd0aa17a1c096e8c2ea512af264ff6a13f6",
+    "gcc-riscv.deb": "47d4670801c391c65513e2002a19280c6bbdba158f5a467ac5100bff813de0e3",
+    "binutils-riscv.deb": "d42d42efdaa0563155d0e1263675852255b20864cc525db9265247a5dec2ce30"
+  }
+}

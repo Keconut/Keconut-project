@@ -1,0 +1,27 @@
+2026-09-19T15:10:58.6751882Z Get:4 http://azure.archive.ubuntu.com/ubuntu noble/universe amd64 gcc-riscv64-unknown-elf amd64 13.2.0-11ubuntu1+12 [48.4 MB]
+2026-09-19T15:11:05.6972411Z Preparing to unpack .../2-gcc-riscv64-unknown-elf_13.2.0-11ubuntu1+12_amd64.deb ...
+2026-09-19T15:11:05.6997636Z Unpacking gcc-riscv64-unknown-elf (13.2.0-11ubuntu1+12) ...
+2026-09-19T15:11:10.3210585Z Setting up gcc-riscv64-unknown-elf (13.2.0-11ubuntu1+12) ...
+2026-09-19T15:11:12.2726392Z Verilator 5.020 2024-01-01 rev (Debian 5.020-1)
+2026-09-19T15:11:12.2756549Z riscv64-unknown-elf-gcc (13.2.0-11ubuntu1+12) 13.2.0
+2026-09-19T15:11:14.4143809Z [INFO] croc commit: b301ef4439ab9b55322d2ac31d672fdcc67bc0c6
+2026-09-19T15:11:39.2776732Z Verilator 5.053 devel rev v5.052-119-g014c9820d (mod)
+2026-09-19T15:11:39.2996182Z riscv64-unknown-elf-gcc (13.2.0-11ubuntu1+12) 13.2.0
+2026-09-19T15:11:39.3154490Z  /usr/lib/gcc/riscv64-unknown-elf/13.2.0/include
+2026-09-19T15:11:39.3155383Z  /usr/lib/gcc/riscv64-unknown-elf/13.2.0/include-fixed
+2026-09-19T15:14:08.8987224Z 6F 00 C0 00 1C 00 00 10 20 00 00 10
+2026-09-19T15:14:08.8987841Z 13 81 81 6D 97 11 00 00 93 81 81 91 6F 00 D0 0B
+2026-09-19T15:14:08.9671657Z Verilator 5.020 2024-01-01 rev (Debian 5.020-1)
+2026-09-19T15:14:10.3419628Z %Error-BLKLOOPINIT: ../rtl/tech_cells_generic/tc_sram.sv:152:59: Unsupported: Delayed assignment to array inside for loops (non-delayed is ok - see docs)
+2026-09-19T15:14:11.1740869Z Verilator 5.053 devel rev v5.052-119-g014c9820d (mod)
+2026-09-19T15:14:46.2504569Z - V e r i l a t i o n   R e p o r t: Verilator 5.053 devel rev v5.052-119-g014c9820d (mod)
+2026-09-19T15:14:46.2984781Z Running program: ../sw/bin/helloworld.hex
+2026-09-19T15:14:46.3348058Z @     42050ns | [JTAG] Initialization success
+2026-09-19T15:14:46.3698497Z @     94600ns | [JTAG] Read back correct data
+2026-09-19T15:14:47.2862974Z @   1453900ns | [CORE] Waking core via CLINT msip
+2026-09-19T15:14:47.3557633Z @   1490300ns | [JTAG] Halted
+2026-09-19T15:14:47.3606187Z @   1492600ns | [JTAG] Resumed hart 0 
+2026-09-19T15:14:47.3606823Z @   1492600ns | [CORE] Wait for end of code...
+2026-09-19T15:14:49.5713979Z @   3513400ns | [UART] Hello World from Croc!
+2026-09-19T15:14:49.0811210Z tb_croc_soc.i_croc_soc.i_croc.i_core_wrap.i_core.id_stage_i.controller_i @    3351225ns: Illegal instruction (hart 0) at PC 0x00000000: 0x00010413
+
