@@ -1,5 +1,5 @@
 # Keconut-project
-# 通用素养
+## 通用素养
 
 ### 1. Git 操作（3次 commit + 分支合并解释）
 本项目在开发过程中，使用了 Git 进行版本控制，一共进行了多次 git commit 提交（详见仓库的 Commit 历史），确保每一步更改都有记录。
@@ -39,9 +39,9 @@
 
 ---
 
-# 进阶挑战（选择任务2：阅读论文《Croc: Training the Next Generation Chip Designers on Domain-Specific End-to-End Open Source Silicon》）
+## 进阶挑战（选择任务2：阅读论文《Croc: Training the Next Generation Chip Designers on Domain-Specific End-to-End Open Source Silicon》）
 
-# Croc 实验工作报告
+## Croc 实验工作报告
 
 ## 前端、后端各做了什么
 
