@@ -1,14 +1,31 @@
-# Croc 运行故障修复包
+# Croc 实验工作报告
 
-本包针对公开仓库 `Keconut/Keconut-project` 的 Croc 实验工作流。诊断基于真实 GitHub Actions 日志、对应上游源码，以及本会话中的独立复现。
+## 前端、后端各做了什么
 
-## 怎么使用
+| 阶段 | 输入和操作 | 可验证的结果 |
+| --- | --- | --- |
+| 软件编译 | 将 C 程序和启动汇编交给 RISC-V 交叉编译器 | ELF、反汇编 dump、加载用 hex |
+| 前端 RTL 仿真 | Verilator 编译 SoC 与测试台；JTAG 将 hex 装入模拟 SRAM；模拟 CPU 执行 | UART 字符串、程序结束状态、正常退出 |
+| Yosys 综合 | 读取 SoC RTL 和 IHP 工艺 Liberty，完成逻辑综合、ABC 映射 | `croc_yosys.v`、`netlist_debug.v`、面积及其他综合报告 |
 
-1. 打开朋友仓库根目录的 `.github/workflows/croc_test.yml`，用本包的 `croc_test.yml` **完整替换其内容**并提交。注意不是 `Croc_chip/.github/workflows/croc_test.yml`；后者是子目录里的副本。
-2. 在 Actions 中选择 `Croc frontend + backend`，查看新运行；需要手动启动时点 `Run workflow`。重新运行旧的失败任务不会自动使用这份修改。
-3. 成功标准是前端步骤输出 `[FRONTEND] PASSED`，后端步骤输出 `[BACKEND] PASSED`。运行页的 `croc-evidence` artifact 保存真实日志、软件产物、门级网表和综合报告。
+本包后端验证范围为 Yosys 综合。布局布线属于后续 OpenROAD 阶段，综合报告不代表已经完成物理设计或流片验证。
 
-替换工作流即可；它会自行检出固定版本的 Croc，并应用两个补丁，不需要手动修改下载后的源码。仓库现有网页和其他项目不需要调整。
+helloworld 及本版本支持库没有使用数学函数，因此示例工作流取消了不必要的 `-lm`，保留 `-lgcc` 和项目原有编译参数；不需要安装 picolibc 或创建编译器包装脚本。日后若程序加入数学库函数，需要重新配置相应的库。
+
+## 文件说明
+
+- `croc_test.yml`：可直接替换的完整 Actions 工作流。
+- `fix-crt0.patch`：最小启动代码补丁。
+- `fix-synthesis-tools.patch`：slang 与 ABC 调用兼容补丁。
+- `validation/`：实测记录与产物。
+
+## 来源
+
+- [原始失败运行与完整日志](https://github.com/Keconut/Keconut-project/actions/runs/35450994899/job/105917998062)
+- [失败运行使用的工作流](https://github.com/Keconut/Keconut-project/blob/833e2ddd4116e7de38cb58bbdc8bf4165def23d7/.github/workflows/croc_test.yml)
+- [对应 Croc 启动代码](https://github.com/pulp-platform/croc/blob/b301ef4439ab9b55322d2ac31d672fdcc67bc0c6/sw/crt0.S)
+- [GNU 汇编器对 relaxation / norelax 的说明](https://sourceware.org/binutils/docs/as/RISC_002dV_002dDirectives.html)
+- [slang/sv-elab 关于移除 unknown-modules 参数的说明](https://github.com/povik/sv-elab/wiki/No-unknown-modules)
 
 ## 已定位的故障
 
@@ -58,7 +75,7 @@ _start:
 
 ## 验证依据
 
-- 朋友仓库提交：`833e2ddd4116e7de38cb58bbdc8bf4165def23d7`。
+- 仓库提交：`833e2ddd4116e7de38cb58bbdc8bf4165def23d7`。
 - Croc 提交：`b301ef4439ab9b55322d2ac31d672fdcc67bc0c6`，与失败日志检出的版本一致。
 - 软件编译器：Ubuntu RISC-V GCC `13.2.0-11ubuntu1+12`，binutils `2.42-1ubuntu1+6`。
 - Bender：`v0.32.1`。
@@ -69,31 +86,4 @@ _start:
 
 `validation/` 保存原始 Actions 摘录、本次修复前后反汇编、仿真日志、编译记录与综合验证产物。具体检查结果见 `validation/verification.json`。
 
-这些是本会话 Ubuntu 环境中的实测记录。新 YAML 已做语法检查并核对补丁内容；尚未在朋友的 GitHub Actions 中远程重跑，也没有修改其远程仓库。
-
-## 前端、后端各做了什么
-
-| 阶段 | 输入和操作 | 可验证的结果 |
-| --- | --- | --- |
-| 软件编译 | 将 C 程序和启动汇编交给 RISC-V 交叉编译器 | ELF、反汇编 dump、加载用 hex |
-| 前端 RTL 仿真 | Verilator 编译 SoC 与测试台；JTAG 将 hex 装入模拟 SRAM；模拟 CPU 执行 | UART 字符串、程序结束状态、正常退出 |
-| Yosys 综合 | 读取 SoC RTL 和 IHP 工艺 Liberty，完成逻辑综合、ABC 映射 | `croc_yosys.v`、`netlist_debug.v`、面积及其他综合报告 |
-
-本包后端验证范围为 Yosys 综合。布局布线属于后续 OpenROAD 阶段，综合报告不代表已经完成物理设计或流片验证。
-
-helloworld 及本版本支持库没有使用数学函数，因此示例工作流取消了不必要的 `-lm`，保留 `-lgcc` 和项目原有编译参数；不需要安装 picolibc 或创建编译器包装脚本。日后若程序加入数学库函数，需要重新配置相应的库。
-
-## 文件说明
-
-- `croc_test.yml`：可直接替换的完整 Actions 工作流。
-- `fix-crt0.patch`：最小启动代码补丁。
-- `fix-synthesis-tools.patch`：slang 与 ABC 调用兼容补丁。
-- `validation/`：实测记录与产物。
-
-## 来源
-
-- [原始失败运行与完整日志](https://github.com/Keconut/Keconut-project/actions/runs/35450994899/job/105917998062)
-- [失败运行使用的工作流](https://github.com/Keconut/Keconut-project/blob/833e2ddd4116e7de38cb58bbdc8bf4165def23d7/.github/workflows/croc_test.yml)
-- [对应 Croc 启动代码](https://github.com/pulp-platform/croc/blob/b301ef4439ab9b55322d2ac31d672fdcc67bc0c6/sw/crt0.S)
-- [GNU 汇编器对 relaxation / norelax 的说明](https://sourceware.org/binutils/docs/as/RISC_002dV_002dDirectives.html)
-- [slang/sv-elab 关于移除 unknown-modules 参数的说明](https://github.com/povik/sv-elab/wiki/No-unknown-modules)
+这些是本会话 Ubuntu 环境中的实测记录。新 YAML 已做语法检查并核对补丁内容。
