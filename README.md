@@ -17,13 +17,15 @@
 
 **mkdir**：创建新文件夹（Make Directory）。例如 mkdir new_folder。
 
-### git常用命令
+**git常用命令**：
 
-**git add** .（把修改添加到暂存区）。
+  **git pull**：获取并整合远程更新。
 
-**git commit -m "说明"**：提交修改到本地仓库（提交修改）。
+  **git add** ：把修改添加到暂存区。
 
-**git push**：推送到 GitHub 远程仓库。
+  **git commit -m "说明"**：提交修改到本地仓库（提交修改）。
+
+  **git push**：推送到 GitHub 远程仓库。
 
 ### 3. 信息安全与安全意识
 
